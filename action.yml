@@ -1,5 +1,8 @@
 name: kv-lint
-description: Lint Valve KeyValues files, with rules for Metamod translation phrase and menu files
+description: Lint Valve KeyValues files, with rules for Sourcemod style translation phrase and menu files
+branding:
+  color: "purple"
+  icon: "aperture"
 inputs:
   config:
     description: Config file, globs in it are relative to its directory
@@ -10,7 +13,7 @@ inputs:
 runs:
   using: composite
   steps:
-    - uses: actions/setup-python@v6
+    - uses: actions/setup-python@v7
       with:
         python-version: "3.x"
     # Inputs go through env so they never get spliced into the script.
