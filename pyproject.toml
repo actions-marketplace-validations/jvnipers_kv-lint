@@ -1,0 +1,19 @@
+[build-system]
+requires = ["hatchling"]
+build-backend = "hatchling.build"
+
+[project]
+name = "kv-lint"
+version = "1.0.0"
+description = "Linter for Valve KeyValues files, with rules for Metamod translations"
+readme = "README.md"
+requires-python = ">=3.11"
+
+[project.scripts]
+kv-lint = "kv_lint.cli:main"
+
+[tool.hatch.build.targets.wheel]
+packages = ["src/kv_lint"]
+
+[tool.pytest.ini_options]
+pythonpath = ["src"]

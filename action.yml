@@ -1,0 +1,25 @@
+name: kv-lint
+description: Lint Valve KeyValues files, with rules for Metamod translation phrase and menu files
+inputs:
+  config:
+    description: Config file, globs in it are relative to its directory
+    default: "kv-lint.toml"
+  files:
+    description: Space-separated globs to check with the generic checks only, instead of the config
+    default: ""
+runs:
+  using: composite
+  steps:
+    - uses: actions/setup-python@v6
+      with:
+        python-version: "3.x"
+    # Inputs go through env so they never get spliced into the script.
+    # set -f keeps bash from expanding the globs; kv-lint does that itself.
+    - shell: bash
+      env:
+        PYTHONPATH: ${{ github.action_path }}/src
+        KV_LINT_CONFIG: ${{ inputs.config }}
+        KV_LINT_FILES: ${{ inputs.files }}
+      run: |
+        set -f
+        python -m kv_lint --config "$KV_LINT_CONFIG" $KV_LINT_FILES

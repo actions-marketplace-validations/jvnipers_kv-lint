@@ -1,0 +1,4 @@
+__pycache__/
+.pytest_cache/
+missing-translations.txt
+missing-translations.json
