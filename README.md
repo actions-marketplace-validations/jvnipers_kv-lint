@@ -4,9 +4,12 @@ Linter for Valve KeyValues (KV1) files. Every file gets syntax, duplicate key an
 
 - `phrases`: `*.phrases.txt` (placeholders, printf specifiers, color tags, language codes). `style`:
   - `sourcemod` (default): checked against `en`.
-  Language folders (`translations/de/x.phrases.txt`) merge into the base file, and SourceMod's `languages.cfg` works as the languages file
+    Language folders (`translations/de/x.phrases.txt`) merge into the base file, and SourceMod's `languages.cfg` works as the languages file
   - `mm-utils`: checked against the phrase name, as mm-utils does at load
 - `radiopanel`: per-language RadioPanel menus checked against `english.txt`
+- `gamedata`: signatures, offsets, platform keys and references. `style`:
+  - `sourcemod` (default): SourceMod gameconf (`\x55\x8B`, `@symbol`, `Addresses`, `#supported`, `master.games.txt`)
+  - `ida`: cs2fixes-style plugins scanned by KHook (`"48 8B ?? 05"`, `library`, `Patches`)
 
 ## Config
 

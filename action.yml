@@ -19,6 +19,12 @@ inputs:
   radiopanel:
     description: Space-separated globs to check with the radiopanel rules, instead of the config
     default: ""
+  gamedata:
+    description: Space-separated globs to check with the gamedata rules, instead of the config
+    default: ""
+  gamedata-style:
+    description: How gamedata files are checked, sourcemod (default) or ida
+    default: ""
   languages:
     description: Languages file for phrases/radiopanel, instead of the config
     default: ""
@@ -65,6 +71,8 @@ runs:
         KV_LINT_PHRASES: ${{ inputs.phrases }}
         KV_LINT_PHRASES_STYLE: ${{ inputs.phrases-style }}
         KV_LINT_RADIOPANEL: ${{ inputs.radiopanel }}
+        KV_LINT_GAMEDATA: ${{ inputs.gamedata }}
+        KV_LINT_GAMEDATA_STYLE: ${{ inputs.gamedata-style }}
         KV_LINT_LANGUAGES: ${{ inputs.languages }}
         KV_LINT_REPORT: ${{ inputs.report }}
         KV_LINT_JSON: ${{ inputs.json }}
@@ -77,6 +85,8 @@ runs:
         for check in $KV_LINT_CHECKS; do args+=(--check "$check"); done
         for glob in $KV_LINT_PHRASES; do args+=(--phrases "$glob"); done
         for glob in $KV_LINT_RADIOPANEL; do args+=(--radiopanel "$glob"); done
+        for glob in $KV_LINT_GAMEDATA; do args+=(--gamedata "$glob"); done
+        if [ -n "$KV_LINT_GAMEDATA_STYLE" ]; then args+=(--gamedata-style "$KV_LINT_GAMEDATA_STYLE"); fi
         if [ -n "$KV_LINT_LANGUAGES" ]; then args+=(--languages "$KV_LINT_LANGUAGES"); fi
         if [ -n "$KV_LINT_REPORT" ]; then args+=(--report "$KV_LINT_REPORT"); fi
         if [ -n "$KV_LINT_JSON" ]; then args+=(--json "$KV_LINT_JSON"); fi
