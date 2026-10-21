@@ -3,7 +3,8 @@ from dataclasses import dataclass, field
 from pathlib import Path
 from typing import Optional
 
-RULES = ("phrases", "radiopanel")
+from .checks import CHECKS, SEVERITIES
+from .rules import RULE_SETS
 
 
 class ConfigError(Exception):
@@ -14,6 +15,7 @@ class ConfigError(Exception):
 class FileSet:
     globs: list[str]
     rules: Optional[str] = None
+    options: dict[str, str] = field(default_factory=dict)
 
 
 @dataclass
@@ -23,6 +25,8 @@ class Config:
     languages: Optional[str] = None
     report: Optional[str] = None
     json: Optional[str] = None
+    markdown: Optional[str] = None
+    checks: dict[str, str] = field(default_factory=dict)
 
 
 def _check_keys(table: dict, allowed: set[str], where: str) -> None:
@@ -38,6 +42,27 @@ def _optional_str(table: dict, key: str, where: str) -> Optional[str]:
     return value
 
 
+def check_severities(table: dict, where: str) -> dict[str, str]:
+    for check, severity in table.items():
+        if check not in CHECKS:
+            raise ConfigError(f"unknown check '{check}' in {where}")
+        if severity not in SEVERITIES:
+            raise ConfigError(
+                f"'{check}' in {where} must be one of: {', '.join(SEVERITIES)}"
+            )
+    return dict(table)
+
+
+def check_options(rules: str, options: dict[str, str], where: str) -> dict[str, str]:
+    allowed = RULE_SETS[rules].options
+    for option, value in options.items():
+        if value not in allowed[option]:
+            raise ConfigError(
+                f"{where} has unknown {option} '{value}' (expected one of: {', '.join(allowed[option])})"
+            )
+    return options
+
+
 def load_config(path: Path) -> Config:
     try:
         with open(path, "rb") as f:
@@ -45,28 +70,41 @@ def load_config(path: Path) -> Config:
     except tomllib.TOMLDecodeError as e:
         raise ConfigError(f"{path}: {e}") from e
 
-    _check_keys(data, {"languages", "report", "json", "files"}, path.name)
+    _check_keys(
+        data, {"languages", "report", "json", "markdown", "checks", "files"}, path.name
+    )
+    checks = data.get("checks", {})
+    if not isinstance(checks, dict):
+        raise ConfigError(f"'checks' in {path.name} must be a table")
     config = Config(
         root=path.resolve().parent,
         languages=_optional_str(data, "languages", path.name),
         report=_optional_str(data, "report", path.name),
         json=_optional_str(data, "json", path.name),
+        markdown=_optional_str(data, "markdown", path.name),
+        checks=check_severities(checks, f"[checks] in {path.name}"),
     )
 
     for index, entry in enumerate(data.get("files", []), 1):
         where = f"[[files]] entry {index}"
-        _check_keys(entry, {"glob", "rules"}, where)
+        rules = _optional_str(entry, "rules", where)
+        if rules is not None and rules not in RULE_SETS:
+            raise ConfigError(
+                f"{where} has unknown rules '{rules}' (expected one of: {', '.join(RULE_SETS)})"
+            )
+        option_names = set(RULE_SETS[rules].options) if rules else set()
+        _check_keys(entry, {"glob", "rules", *option_names}, where)
         globs = entry.get("glob")
         if isinstance(globs, str):
             globs = [globs]
         if not globs or not all(isinstance(g, str) for g in globs):
             raise ConfigError(f"{where} needs 'glob' as a string or list of strings")
-        rules = _optional_str(entry, "rules", where)
-        if rules is not None and rules not in RULES:
-            raise ConfigError(
-                f"{where} has unknown rules '{rules}' (expected one of: {', '.join(RULES)})"
-            )
-        config.files.append(FileSet(globs, rules))
+        options = {
+            o: _optional_str(entry, o, where) for o in option_names if o in entry
+        }
+        if rules:
+            check_options(rules, options, where)
+        config.files.append(FileSet(globs, rules, options))
 
     if not config.files:
         raise ConfigError(f"{path.name} has no [[files]] entries")

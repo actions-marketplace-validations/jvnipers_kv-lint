@@ -13,6 +13,9 @@ inputs:
   phrases:
     description: Space-separated globs to check with the phrases rules, instead of the config
     default: ""
+  phrases-style:
+    description: How phrases files are checked, sourcemod (default) or mm-utils
+    default: ""
   radiopanel:
     description: Space-separated globs to check with the radiopanel rules, instead of the config
     default: ""
@@ -24,6 +27,12 @@ inputs:
     default: ""
   json:
     description: Missing translations JSON report file, instead of the config
+    default: ""
+  markdown:
+    description: Translations summary markdown file, instead of the config
+    default: ""
+  checks:
+    description: Space-separated ID=SEVERITY overrides
     default: ""
   output:
     description: File to write the issues to, only created when there are any
@@ -54,19 +63,25 @@ runs:
         KV_LINT_CONFIG: ${{ inputs.config }}
         KV_LINT_FILES: ${{ inputs.files }}
         KV_LINT_PHRASES: ${{ inputs.phrases }}
+        KV_LINT_PHRASES_STYLE: ${{ inputs.phrases-style }}
         KV_LINT_RADIOPANEL: ${{ inputs.radiopanel }}
         KV_LINT_LANGUAGES: ${{ inputs.languages }}
         KV_LINT_REPORT: ${{ inputs.report }}
         KV_LINT_JSON: ${{ inputs.json }}
+        KV_LINT_MARKDOWN: ${{ inputs.markdown }}
+        KV_LINT_CHECKS: ${{ inputs.checks }}
         KV_LINT_OUTPUT: ${{ inputs.output }}
       run: |
         set -f
         args=()
+        for check in $KV_LINT_CHECKS; do args+=(--check "$check"); done
         for glob in $KV_LINT_PHRASES; do args+=(--phrases "$glob"); done
         for glob in $KV_LINT_RADIOPANEL; do args+=(--radiopanel "$glob"); done
         if [ -n "$KV_LINT_LANGUAGES" ]; then args+=(--languages "$KV_LINT_LANGUAGES"); fi
         if [ -n "$KV_LINT_REPORT" ]; then args+=(--report "$KV_LINT_REPORT"); fi
         if [ -n "$KV_LINT_JSON" ]; then args+=(--json "$KV_LINT_JSON"); fi
+        if [ -n "$KV_LINT_MARKDOWN" ]; then args+=(--markdown "$KV_LINT_MARKDOWN"); fi
+        if [ -n "$KV_LINT_PHRASES_STYLE" ]; then args+=(--phrases-style "$KV_LINT_PHRASES_STYLE"); fi
         if [ -n "$KV_LINT_CONFIG" ]; then args+=(--config "$KV_LINT_CONFIG"); fi
         if [ -n "$KV_LINT_OUTPUT" ]; then args+=(--output "$KV_LINT_OUTPUT"); fi
         "$KV_LINT_PYTHON" -m kv_lint "${args[@]}" $KV_LINT_FILES

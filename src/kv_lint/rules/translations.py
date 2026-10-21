@@ -5,12 +5,12 @@ import json
 import re
 from collections import defaultdict
 from dataclasses import dataclass, field
-from io import StringIO
 from pathlib import Path
 from typing import Optional
 
-from . import kv
-from .linter import Document, Linter
+from .. import kv
+from ..linter import Document, Linter
+from .base import RuleSet, State
 
 
 @dataclass
@@ -49,7 +49,32 @@ def _sections(node: kv.Node) -> list[kv.Node]:
     return [c for c in node.children if c.is_section] if node.children else []
 
 
-class TranslationRules:
+def format_args(text: str) -> str:
+    # Port of mm-utils FormatArgs (translations.cpp); a translation is dropped when it differs from the name's
+    args = []
+    i, n = 0, len(text)
+    while i < n:
+        if text[i] != "%":
+            i += 1
+            continue
+        at = i + 1
+        if at < n and text[at] == "%":
+            i = at + 1
+            continue
+        while at < n and text[at] in "-+ #0123456789.*":
+            if text[at] == "*":
+                args.append("*")
+            at += 1
+        while at < n and text[at] in "hlLjzt":
+            args.append(text[at])
+            at += 1
+        known = at < n and text[at] in "diouxXeEfFgGaAcsp"
+        args.append(text[at] if known else "?")
+        i = at + 1 if known else at
+    return "".join(args)
+
+
+class Translations(State):
 
     DEFAULT_LANGUAGE_MAP = {
         "arabic": "ar",
@@ -106,6 +131,26 @@ class TranslationRules:
         "grey2",
     }
 
+    # mm-utils chat_colors.cpp, replaced case-sensitively
+    MM_UTILS_COLOR_TAGS = {
+        "default",
+        "darkred",
+        "purple",
+        "green",
+        "olive",
+        "lime",
+        "red",
+        "grey",
+        "yellow",
+        "bluegrey",
+        "blue",
+        "darkblue",
+        "grey2",
+        "orchid",
+        "lightred",
+        "gold",
+    }
+
     # No space flag: "100% of" would otherwise parse as "% o"
     PRINTF_SPECIFIER = re.compile(
         r"%[-+#0]*(?:\d+|\*)?(?:\.(?:\d+|\*))?(?:hh|h|ll|l|L|z|j|t|I64)?[diuxXeEfgGcsp%]"
@@ -113,9 +158,10 @@ class TranslationRules:
 
     MENU_COMMAND_KEYS = {"hotkey", "label", "cmd"}
 
-    def __init__(self, linter: Linter, languages_path: Optional[Path]):
-        self.linter = linter
+    def __init__(self, linter: Linter, config) -> None:
+        super().__init__(linter, config)
         self._add_issue = linter.add_issue
+        languages_path = config.root / config.languages if config.languages else None
 
         self.all_phrase_blocks: dict[str, list[PhraseBlock]] = {}
         self.global_languages: set[str] = set()
@@ -129,6 +175,8 @@ class TranslationRules:
         self.menu_dir: Optional[Path] = None
         self.menu_files: dict[str, list[MenuGroup]] = {}
         self.menu_languages: set[str] = set()
+        self.menu_file_count = 0
+        self._report: Optional[dict] = None
 
     def _default_language_data(self) -> tuple[dict[str, str], set[str]]:
         self.languages_source = "default language list"
@@ -189,7 +237,7 @@ class TranslationRules:
 
         self._check_language_consistency()
 
-    def lint_phrases(self, doc: Document) -> None:
+    def lint_phrases(self, doc: Document, style: str) -> None:
         tracker = self.linter.ignore_trackers[doc.name]
         blocks = []
 
@@ -198,8 +246,7 @@ class TranslationRules:
                 self._add_issue(
                     doc.name,
                     root.line,
-                    "error",
-                    "Format",
+                    "phrase-structure",
                     f"Expected \"Phrases\" section, found key-value pair '{root.key}'",
                     doc.context(root.line),
                 )
@@ -210,8 +257,7 @@ class TranslationRules:
                     self._add_issue(
                         doc.name,
                         node.line,
-                        "error",
-                        "Format",
+                        "phrase-structure",
                         f"Expected phrase section, found key-value pair '{node.key}'",
                         doc.context(node.line),
                     )
@@ -229,8 +275,7 @@ class TranslationRules:
                         self._add_issue(
                             doc.name,
                             child.line,
-                            "error",
-                            "Format",
+                            "phrase-structure",
                             f"Unexpected section '{child.key}' in phrase '{node.key}', expected \"key\" \"value\"",
                             doc.context(child.line),
                         )
@@ -244,8 +289,11 @@ class TranslationRules:
                 blocks.append(block)
 
         self.all_phrase_blocks[doc.name] = blocks
-        self._check_phrase_format_tags(doc, blocks)
-        self._check_phrase_blocks(doc.name, blocks)
+        if style == "mm-utils":
+            self._check_mm_utils_phrases(doc, blocks)
+        else:
+            self._check_phrase_format_tags(doc, blocks)
+        self._check_phrase_blocks(doc.name, blocks, style)
 
     def _parse_format_spec(self, format_value: str) -> set[str]:
         placeholders = set()
@@ -279,13 +327,49 @@ class TranslationRules:
                         self._add_issue(
                             doc.name,
                             line_num,
-                            "warning",
-                            "Format",
+                            "unknown-tag",
                             f"Unknown format tag: {{{tag}}}",
                             doc.context(line_num),
                         )
 
-    def _check_phrase_blocks(self, filename: str, blocks: list[PhraseBlock]) -> None:
+    def _check_mm_utils_phrases(self, doc: Document, blocks: list[PhraseBlock]) -> None:
+        for block in blocks:
+            name_args = format_args(block.name)
+            # Non-color tags in the name are filled by the plugin itself (e.g. cs2menus FillTemplate)
+            placeholders = (
+                set(re.findall(r"\{([^}]+)\}", block.name)) - self.MM_UTILS_COLOR_TAGS
+            )
+            for lang, (line_num, value) in block.languages.items():
+                tags = re.findall(r"\{([^}]+)\}", value)
+                missing = placeholders - set(tags)
+                if not block.ignored and missing:
+                    self._add_issue(
+                        doc.name,
+                        line_num,
+                        "missing-placeholder",
+                        f"Missing placeholder(s) {{{', '.join(sorted(missing))}}} in '{lang}' translation for '{block.name}' (present in the phrase name)",
+                    )
+                for tag in tags:
+                    if tag not in self.MM_UTILS_COLOR_TAGS and tag not in placeholders:
+                        self._add_issue(
+                            doc.name,
+                            line_num,
+                            "unknown-tag",
+                            f"Unknown color tag: {{{tag}}}",
+                            doc.context(line_num),
+                        )
+                if not block.ignored and format_args(value) != name_args:
+                    self._add_issue(
+                        doc.name,
+                        line_num,
+                        "format-mismatch",
+                        f"Format arguments ({format_args(value) or 'none'}) in '{lang}' translation for '{block.name}' "
+                        f"don't match the phrase name ({name_args or 'none'}), so mm-utils leaves it out",
+                    )
+
+    def _check_phrase_blocks(
+        self, filename: str, blocks: list[PhraseBlock], style: str
+    ) -> None:
         for block in blocks:
             if block.ignored:
                 continue
@@ -294,8 +378,7 @@ class TranslationRules:
                 self._add_issue(
                     filename,
                     block.start_line,
-                    "error",
-                    "Missing",
+                    "missing-english",
                     f"Missing English ('en') translation for phrase '{block.name}'",
                 )
 
@@ -304,21 +387,19 @@ class TranslationRules:
                     self._add_issue(
                         filename,
                         line_num,
-                        "warning",
-                        "Empty",
+                        "empty-translation",
                         f"Empty translation for language '{lang}' in phrase '{block.name}'",
                     )
                 elif value.rstrip().endswith("[...]"):
                     self._add_issue(
                         filename,
                         line_num,
-                        "warning",
-                        "Truncated",
+                        "truncated-translation",
                         f"Translation appears to be truncated for language '{lang}' in phrase '{block.name}'",
                         value[:60] + "...",
                     )
 
-            if "en" in block.languages:
+            if "en" in block.languages and style == "sourcemod":
                 en_value = block.languages["en"][1]
                 en_placeholders = self._extract_placeholders(en_value)
                 en_specifiers = self._extract_printf_specifiers(en_value)
@@ -334,8 +415,7 @@ class TranslationRules:
                         self._add_issue(
                             filename,
                             line_num,
-                            "error",
-                            "Placeholder",
+                            "missing-placeholder",
                             f"Missing placeholder(s) {{{', '.join(sorted(missing))}}} in '{lang}' translation for '{block.name}' (present in 'en')",
                         )
 
@@ -345,8 +425,7 @@ class TranslationRules:
                         self._add_issue(
                             filename,
                             line_num,
-                            "error",
-                            "Specifier",
+                            "format-mismatch",
                             f"Format specifiers ({' '.join(lang_specifiers) or 'none'}) in '{lang}' translation for '{block.name}' don't match 'en' ({' '.join(en_specifiers) or 'none'})",
                         )
 
@@ -366,14 +445,14 @@ class TranslationRules:
                         self._add_issue(
                             filename,
                             line_num,
-                            "error",
-                            "Unknown",
+                            "unknown-language",
                             f"Unknown language code '{lang}' in phrase '{block.name}' (not in {self.languages_source})",
                         )
 
     def lint_radiopanel(self, docs: list[Document]) -> None:
         if not docs:
             return
+        self.menu_file_count += len(docs)
 
         english = next((d for d in docs if d.path.name == "english.txt"), None)
         self.menu_dir = (english or docs[0]).path.parent
@@ -384,8 +463,7 @@ class TranslationRules:
                 self._add_issue(
                     menu_dir_name,
                     0,
-                    "error",
-                    "Missing",
+                    "missing-menu-reference",
                     "Missing english.txt - this is the reference file for menu translations",
                 )
             return
@@ -418,7 +496,7 @@ class TranslationRules:
 
     def _parse_menu_group(self, doc: Document, node: kv.Node) -> MenuGroup:
         if not node.key:
-            self._add_issue(doc.name, node.line, "error", "Syntax", "Empty group name")
+            self._add_issue(doc.name, node.line, "menu-structure", "Empty group name")
         group = MenuGroup(name=node.key, start_line=node.line, end_line=node.end_line)
 
         for child in node.children or []:
@@ -435,8 +513,7 @@ class TranslationRules:
                 self._add_issue(
                     doc.name,
                     child.line,
-                    "error",
-                    "Syntax",
+                    "menu-structure",
                     "Empty key in key-value pair",
                     doc.context(child.line),
                 )
@@ -450,16 +527,14 @@ class TranslationRules:
                 self._add_issue(
                     doc.name,
                     child.line,
-                    "error",
-                    "Structural",
+                    "menu-structure",
                     f"Command key '{key}' found at group level in '{group.name}' - likely a missing or extra brace",
                 )
             else:
                 self._add_issue(
                     doc.name,
                     child.line,
-                    "warning",
-                    "Unknown Key",
+                    "unknown-menu-key",
                     f"Unknown key '{key}' in group '{group.name}' (expected: hotkey, title, timeout)",
                 )
 
@@ -469,9 +544,7 @@ class TranslationRules:
         self, doc: Document, group: MenuGroup, node: kv.Node
     ) -> MenuCommand:
         if not node.key:
-            self._add_issue(
-                doc.name, node.line, "error", "Syntax", "Empty command name"
-            )
+            self._add_issue(doc.name, node.line, "menu-structure", "Empty command name")
         command = MenuCommand(
             name=node.key, start_line=node.line, end_line=node.end_line
         )
@@ -483,8 +556,7 @@ class TranslationRules:
                 self._add_issue(
                     doc.name,
                     child.line,
-                    "error",
-                    "Syntax",
+                    "menu-structure",
                     "Empty key in key-value pair",
                     doc.context(child.line),
                 )
@@ -494,8 +566,7 @@ class TranslationRules:
                 self._add_issue(
                     doc.name,
                     child.line,
-                    "warning",
-                    "Unknown Key",
+                    "unknown-menu-key",
                     f"Unknown key '{child.key}' in command '{command.name}' (expected: hotkey, label, cmd)",
                 )
 
@@ -519,8 +590,7 @@ class TranslationRules:
                 self._add_issue(
                     menu_prefix,
                     0,
-                    "warning",
-                    "Missing",
+                    "missing-menu-entry",
                     f"Missing menu group '{en_group_name}' (exists in english.txt)",
                 )
                 continue
@@ -535,8 +605,7 @@ class TranslationRules:
                 self._add_issue(
                     menu_prefix,
                     lang_group.start_line,
-                    "warning",
-                    "Mismatch",
+                    "menu-mismatch",
                     f"Timeout mismatch for group '{en_group_name}': english='{en_group.timeout}', {filename}='{lang_group.timeout}'",
                 )
 
@@ -550,8 +619,7 @@ class TranslationRules:
                     self._add_issue(
                         menu_prefix,
                         lang_group.start_line,
-                        "warning",
-                        "Missing",
+                        "missing-menu-entry",
                         f"Missing command '{en_cmd_name}' in group '{en_group_name}' (exists in english.txt)",
                     )
                     continue
@@ -562,8 +630,7 @@ class TranslationRules:
                     self._add_issue(
                         menu_prefix,
                         lang_cmd.start_line,
-                        "warning",
-                        "Missing",
+                        "missing-menu-entry",
                         f"Missing label for command '{en_cmd_name}' in group '{en_group_name}'",
                     )
 
@@ -574,8 +641,7 @@ class TranslationRules:
                         self._add_issue(
                             menu_prefix,
                             lang_cmd.start_line,
-                            "warning",
-                            "Missing",
+                            "missing-menu-entry",
                             f"Missing '{prop}' property for command '{en_cmd_name}' in group '{en_group_name}'",
                         )
                     elif (
@@ -586,8 +652,7 @@ class TranslationRules:
                         self._add_issue(
                             menu_prefix,
                             lang_cmd.start_line,
-                            "warning",
-                            "Mismatch",
+                            "menu-mismatch",
                             f"{prop.capitalize()} mismatch for '{en_cmd_name}': english='{en_val}', {filename}='{lang_val}'",
                         )
 
@@ -597,8 +662,7 @@ class TranslationRules:
                     self._add_issue(
                         menu_prefix,
                         lang_cmd.start_line,
-                        "warning",
-                        "Extra",
+                        "extra-menu-entry",
                         f"Extra command '{lang_cmd_name}' in group '{en_group_name}' not in english.txt",
                     )
 
@@ -607,8 +671,7 @@ class TranslationRules:
                 self._add_issue(
                     menu_prefix,
                     lang_group_map[lang_group_name].start_line,
-                    "warning",
-                    "Extra",
+                    "extra-menu-entry",
                     f"Extra menu group '{lang_group_name}' not in english.txt",
                 )
 
@@ -626,60 +689,9 @@ class TranslationRules:
             self._add_issue(
                 menu_dir_name,
                 0,
-                "info",
-                "Missing",
+                "missing-menu-file",
                 f"Missing menu translation file: {lang_name}.txt (for language code '{lang_code}')",
             )
-
-    def _collect_missing_data(self) -> tuple[dict, dict, int, int, int]:
-        total_missing = 0
-        total_phrases = 0
-        phrases_with_missing = 0
-        missing_per_language: dict[str, int] = defaultdict(int)
-        missing_by_file: dict[str, list] = {}
-
-        for filename, blocks in sorted(self.all_phrase_blocks.items()):
-            if not blocks:
-                continue
-
-            file_missing_report = []
-
-            for block in blocks:
-                if block.ignored:
-                    continue
-                if "en" not in block.languages:
-                    continue
-
-                total_phrases += 1
-                missing = self.global_languages - set(block.languages.keys())
-
-                if missing:
-                    phrases_with_missing += 1
-                    sorted_missing = sorted(missing)
-                    file_missing_report.append(
-                        {
-                            "phrase": block.name,
-                            "line": block.start_line,
-                            "missing_languages": sorted_missing,
-                            "existing_languages": sorted(block.languages.keys()),
-                            "english_text": block.languages.get("en", (0, ""))[1],
-                        }
-                    )
-
-                    for lang in missing:
-                        missing_per_language[lang] += 1
-                    total_missing += len(missing)
-
-            if file_missing_report:
-                missing_by_file[filename] = file_missing_report
-
-        return (
-            missing_by_file,
-            dict(missing_per_language),
-            total_missing,
-            total_phrases,
-            phrases_with_missing,
-        )
 
     def _collect_missing_menu_data(self) -> dict:
         if "english.txt" not in self.menu_files:
@@ -735,219 +747,252 @@ class TranslationRules:
 
         return missing_data
 
-    def _get_report_data(self) -> tuple:
-        if not hasattr(self, "_cached_report_data"):
-            self._cached_report_data = (
-                self._collect_missing_data(),
-                self._collect_missing_menu_data(),
-            )
-        return self._cached_report_data
+    def report_data(self) -> dict:
+        if self._report is not None:
+            return self._report
 
-    @staticmethod
-    def _coverage_pct(translated: int, total: int) -> float:
-        return (translated / total * 100) if total > 0 else 0
+        total_phrases = total_missing = 0
+        missing_per_language: dict[str, int] = defaultdict(int)
+        files = {}
 
-    def generate_missing_languages_report(
-        self, output_file: Optional[Path] = None
-    ) -> str:
-        output = StringIO()
-        sorted_languages = sorted(self.global_languages)
-
-        (
-            missing_by_file,
-            missing_per_language,
-            total_missing,
-            total_phrases,
-            phrases_with_missing,
-        ), missing_menu_data = self._get_report_data()
-
-        output.write("=" * 70 + "\n")
-        output.write("MISSING TRANSLATIONS REPORT\n")
-        output.write(f"Generated for: {self.linter.root}\n")
-        output.write("=" * 70 + "\n\n")
-
-        output.write("SUMMARY\n")
-        output.write("-" * 70 + "\n")
-        output.write(f"Total languages: {len(self.global_languages)}\n")
-        output.write(f"Total phrases: {total_phrases}\n")
-        output.write(f"Phrases with missing translations: {phrases_with_missing}\n")
-        output.write(f"Total missing translation entries: {total_missing}\n\n")
-
-        output.write("LANGUAGE COVERAGE (Phrases)\n")
-        output.write("-" * 70 + "\n\n")
-
-        for lang in sorted_languages:
-            missing_count = missing_per_language.get(lang, 0)
-            translated = total_phrases - missing_count
-            coverage = self._coverage_pct(translated, total_phrases)
-            bar_length = int(coverage / 5)
-            bar = "█" * bar_length + "░" * (20 - bar_length)
-            lang_display = self._get_language_display_name(lang)
-            output.write(
-                f"  {lang_display:20} [{bar}] {coverage:5.1f}% ({translated}/{total_phrases})\n"
-            )
-
-        output.write("\n")
-        output.write(
-            f"Global languages ({len(sorted_languages)}): {', '.join(sorted_languages)}\n"
-        )
-
-        if missing_menu_data or self.menu_files:
-            output.write("\n" + "=" * 70 + "\n")
-            output.write("MENU TRANSLATION STATUS\n")
-            output.write("-" * 70 + "\n\n")
-
-            for lang_code in sorted(self.known_languages):
-                lang_name = self._code_to_name.get(lang_code, lang_code)
-
-                if lang_code in missing_menu_data:
-                    data = missing_menu_data[lang_code]
-                    if not data["file_exists"]:
-                        output.write(
-                            f"  {lang_code:5} ({lang_name:12}): File missing\n"
-                        )
-                    else:
-                        issues = len(data["missing_groups"]) + len(
-                            data["missing_commands"]
-                        )
-                        output.write(
-                            f"  {lang_code:5} ({lang_name:12}): {issues} missing items\n"
-                        )
-                elif f"{lang_name}.txt" in self.menu_files:
-                    output.write(f"  {lang_code:5} ({lang_name:12}): Complete\n")
-
-        output.write("\n" + "=" * 70 + "\n")
-        output.write("DETAILED MISSING TRANSLATIONS (Phrases)\n")
-        output.write("=" * 70 + "\n")
-
-        for filename, file_report in sorted(missing_by_file.items()):
-            output.write(f"\n{filename}\n")
-            output.write("-" * 70 + "\n")
-
-            for item in sorted(file_report, key=lambda x: x["line"]):
-                output.write(f"  Line {item['line']}: \"{item['phrase']}\"\n")
-                output.write(
-                    f"    Missing ({len(item['missing_languages'])}): {', '.join(item['missing_languages'])}\n"
+        for filename, blocks in sorted(self.all_phrase_blocks.items()):
+            phrases = []
+            for block in blocks:
+                if block.ignored or "en" not in block.languages:
+                    continue
+                total_phrases += 1
+                missing = sorted(self.global_languages - block.languages.keys())
+                if not missing:
+                    continue
+                for lang in missing:
+                    missing_per_language[lang] += 1
+                total_missing += len(missing)
+                phrases.append(
+                    {
+                        "name": block.name,
+                        "line": block.start_line,
+                        "english_text": block.languages["en"][1],
+                        "existing_languages": sorted(block.languages.keys()),
+                        "missing_languages": missing,
+                    }
                 )
+            if phrases:
+                phrases.sort(key=lambda x: x["line"])
+                files[filename] = {
+                    "phrases_with_missing": len(phrases),
+                    "phrases": phrases,
+                }
 
-        if missing_menu_data:
-            output.write("\n" + "=" * 70 + "\n")
-            output.write("DETAILED MISSING MENU TRANSLATIONS\n")
-            output.write("=" * 70 + "\n")
-
-            for lang_code, data in sorted(missing_menu_data.items()):
-                output.write(f"\n{data['name']}.txt ({lang_code})\n")
-                output.write("-" * 70 + "\n")
-
-                if not data["file_exists"]:
-                    output.write(" Entire file is missing\n")
-                else:
-                    if data["missing_groups"]:
-                        output.write(
-                            f"  Missing groups: {', '.join(data['missing_groups'])}\n"
-                        )
-                    if data["missing_commands"]:
-                        for cmd in data["missing_commands"]:
-                            output.write(
-                                f"  Missing command: {cmd['command']} (in group {cmd['group']})\n"
-                            )
-
-        output.write("\n" + "=" * 70 + "\n")
-
-        report_content = output.getvalue()
-
-        if output_file:
-            try:
-                with open(output_file, "w", encoding="utf-8") as f:
-                    f.write(report_content)
-                print(f"Missing translations report written to: {output_file}")
-            except Exception as e:
-                print(f"Failed to write report to {output_file}: {e}")
-
-        return report_content
-
-    def generate_missing_languages_json(
-        self, output_file: Optional[Path] = None
-    ) -> dict:
-        sorted_languages = sorted(self.global_languages)
-        (
-            missing_by_file,
-            missing_per_language,
-            total_missing,
-            total_phrases,
-            phrases_with_missing,
-        ), missing_menu_data = self._get_report_data()
-
-        languages_data = {}
-        for lang in sorted_languages:
-            missing_count = missing_per_language.get(lang, 0)
-            translated = total_phrases - missing_count
-            coverage = self._coverage_pct(translated, total_phrases)
-
-            missing_phrases = []
-            for filename, file_report in sorted(missing_by_file.items()):
-                for item in file_report:
-                    if lang in item["missing_languages"]:
-                        missing_phrases.append(
-                            {
-                                "file": filename,
-                                "phrase": item["phrase"],
-                                "line": item["line"],
-                                "english_text": item["english_text"],
-                            }
-                        )
-
-            languages_data[lang] = {
+        menu_missing = self._collect_missing_menu_data()
+        languages = {}
+        for lang in sorted(self.global_languages):
+            translated = total_phrases - missing_per_language[lang]
+            languages[lang] = {
                 "name": self._code_to_name.get(lang, lang),
-                "coverage_percent": round(coverage, 2),
+                "coverage_percent": round(
+                    self._coverage_pct(translated, total_phrases), 2
+                ),
                 "translated": translated,
-                "missing": missing_count,
-                "missing_phrases": missing_phrases,
-                "menu": missing_menu_data.get(
+                "missing": missing_per_language[lang],
+                "missing_phrases": [
+                    {
+                        "file": filename,
+                        "phrase": phrase["name"],
+                        "line": phrase["line"],
+                        "english_text": phrase["english_text"],
+                    }
+                    for filename, file in files.items()
+                    for phrase in file["phrases"]
+                    if lang in phrase["missing_languages"]
+                ],
+                "menu": menu_missing.get(
                     lang,
                     {"file_exists": True, "missing_groups": [], "missing_commands": []},
                 ),
             }
 
-        files_data = {}
-        for filename, file_report in sorted(missing_by_file.items()):
-            files_data[filename] = {
-                "phrases_with_missing": len(file_report),
-                "phrases": [
-                    {
-                        "name": item["phrase"],
-                        "line": item["line"],
-                        "english_text": item["english_text"],
-                        "existing_languages": item["existing_languages"],
-                        "missing_languages": item["missing_languages"],
-                    }
-                    for item in sorted(file_report, key=lambda x: x["line"])
-                ],
-            }
-
-        json_data = {
+        self._report = {
             "summary": {
                 "total_languages": len(self.global_languages),
                 "total_phrases": total_phrases,
-                "phrases_with_missing": phrases_with_missing,
+                "phrases_with_missing": sum(
+                    f["phrases_with_missing"] for f in files.values()
+                ),
                 "total_missing_entries": total_missing,
-                "all_languages": sorted_languages,
+                "all_languages": sorted(self.global_languages),
                 "known_languages_from_config": sorted(self.known_languages),
             },
-            "languages": languages_data,
-            "files": files_data,
+            "languages": languages,
+            "files": files,
             "menu": {
                 "languages_with_menu": sorted(self.menu_languages),
-                "missing": missing_menu_data,
+                "missing": menu_missing,
             },
         }
+        return self._report
 
-        if output_file:
-            try:
-                with open(output_file, "w", encoding="utf-8") as f:
-                    json.dump(json_data, f, indent=2, ensure_ascii=False)
-                print(f"Missing translations JSON written to: {output_file}")
-            except Exception as e:
-                print(f"Failed to write JSON to {output_file}: {e}")
+    @staticmethod
+    def _coverage_pct(translated: int, total: int) -> float:
+        return (translated / total * 100) if total > 0 else 0
 
-        return json_data
+    def _coverage_lines(self) -> list[str]:
+        data = self.report_data()
+        total = data["summary"]["total_phrases"]
+        lines = []
+        for lang, info in data["languages"].items():
+            coverage = self._coverage_pct(info["translated"], total)
+            bar_length = int(coverage / 5)
+            bar = "█" * bar_length + "░" * (20 - bar_length)
+            lang_display = self._get_language_display_name(lang)
+            lines.append(
+                f"  {lang_display:20} [{bar}] {coverage:5.1f}% ({info['translated']}/{total})"
+            )
+        return lines
+
+    def _menu_status_lines(self) -> list[str]:
+        missing = self.report_data()["menu"]["missing"]
+        lines = []
+        for lang_code in sorted(self.known_languages):
+            lang_name = self._code_to_name.get(lang_code, lang_code)
+            if lang_code in missing:
+                data = missing[lang_code]
+                if not data["file_exists"]:
+                    status = "File missing"
+                else:
+                    count = len(data["missing_groups"]) + len(data["missing_commands"])
+                    status = f"{count} missing items"
+            elif f"{lang_name}.txt" in self.menu_files:
+                status = "Complete"
+            else:
+                continue
+            lines.append(f"  {lang_code:5} ({lang_name:12}): {status}")
+        return lines
+
+    def text_report(self) -> str:
+        data = self.report_data()
+        summary = data["summary"]
+        rule, heavy = "-" * 70, "=" * 70
+        out = [
+            heavy,
+            "MISSING TRANSLATIONS REPORT",
+            f"Generated for: {self.linter.root}",
+            heavy,
+            "",
+            "SUMMARY",
+            rule,
+            f"Total languages: {summary['total_languages']}",
+            f"Total phrases: {summary['total_phrases']}",
+            f"Phrases with missing translations: {summary['phrases_with_missing']}",
+            f"Total missing translation entries: {summary['total_missing_entries']}",
+            "",
+            "LANGUAGE COVERAGE (Phrases)",
+            rule,
+            "",
+            *self._coverage_lines(),
+            "",
+            f"Global languages ({len(summary['all_languages'])}): {', '.join(summary['all_languages'])}",
+        ]
+
+        menu_missing = data["menu"]["missing"]
+        if menu_missing or self.menu_files:
+            out += [
+                "",
+                heavy,
+                "MENU TRANSLATION STATUS",
+                rule,
+                "",
+                *self._menu_status_lines(),
+            ]
+
+        out += ["", heavy, "DETAILED MISSING TRANSLATIONS (Phrases)", heavy]
+        for filename, file in data["files"].items():
+            out += ["", filename, rule]
+            for phrase in file["phrases"]:
+                langs = phrase["missing_languages"]
+                out.append(f"  Line {phrase['line']}: \"{phrase['name']}\"")
+                out.append(f"    Missing ({len(langs)}): {', '.join(langs)}")
+
+        if menu_missing:
+            out += ["", heavy, "DETAILED MISSING MENU TRANSLATIONS", heavy]
+            for lang_code, menu in menu_missing.items():
+                out += ["", f"{menu['name']}.txt ({lang_code})", rule]
+                if not menu["file_exists"]:
+                    out.append(" Entire file is missing")
+                    continue
+                if menu["missing_groups"]:
+                    out.append(f"  Missing groups: {', '.join(menu['missing_groups'])}")
+                for cmd in menu["missing_commands"]:
+                    out.append(
+                        f"  Missing command: {cmd['command']} (in group {cmd['group']})"
+                    )
+
+        out += ["", heavy, ""]
+        return "\n".join(out)
+
+    def markdown_report(self, errors: int, warnings: int) -> str:
+        summary = self.report_data()["summary"]
+        rows = [
+            ("Linter Errors", errors),
+            ("Linter Warnings", warnings),
+            ("Total Languages", summary["total_languages"]),
+            ("Total Phrases", summary["total_phrases"]),
+            ("Phrases Missing Translations", summary["phrases_with_missing"]),
+            ("Total Missing Entries", summary["total_missing_entries"]),
+        ]
+        if self.menu_file_count:
+            rows.append(("Menu Files", self.menu_file_count))
+
+        out = ["## Status", "", "| Metric | Value |", "|--------|-------|"]
+        out += [f"| **{name}** | {value} |" for name, value in rows]
+        out += ["", "## Language Coverage (Phrases)", "", "```"]
+        out += self._coverage_lines() or ["  No coverage data available"]
+        out += ["```", ""]
+        if self.menu_file_count:
+            out += ["## Menu Translation Status", "", "```"]
+            out += self._menu_status_lines() or ["  No menu data available"]
+            out += ["```", ""]
+        return "\n".join(out)
+
+    @staticmethod
+    def write(path: Path, content: str, label: str) -> None:
+        try:
+            path.write_text(content, encoding="utf-8", newline="\n")
+            print(f"Missing translations {label} written to: {path}")
+        except Exception as e:
+            print(f"Failed to write {label} to {path}: {e}")
+
+    def write_reports(self, errors: int, warnings: int) -> None:
+        root = self.config.root
+        if self.config.report:
+            self.write(root / self.config.report, self.text_report(), "report")
+        if self.config.json:
+            data = json.dumps(self.report_data(), indent=2, ensure_ascii=False)
+            self.write(root / self.config.json, data, "JSON")
+        if self.config.markdown:
+            markdown = self.markdown_report(errors, warnings)
+            self.write(root / self.config.markdown, markdown, "markdown")
+
+
+class PhrasesRules(RuleSet):
+    name = "phrases"
+    state = Translations
+    escapes = True
+    # A repeated phrase or language is always a bug
+    checks = {"duplicate-key": "error"}
+    options = {"style": ("sourcemod", "mm-utils")}
+
+    def lint(
+        self, state: Translations, docs: list[Document], options: dict[str, str]
+    ) -> None:
+        for doc in docs:
+            state.lint_phrases(doc, options["style"])
+
+
+class RadioPanelRules(RuleSet):
+    name = "radiopanel"
+    state = Translations
+
+    def lint(
+        self, state: Translations, docs: list[Document], options: dict[str, str]
+    ) -> None:
+        state.lint_radiopanel(docs)
