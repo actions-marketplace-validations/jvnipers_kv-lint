@@ -13,7 +13,18 @@ inputs:
 runs:
   using: composite
   steps:
-    - uses: actions/setup-python@v7
+    # setup-python only has builds for GitHub's images, so self-hosted runners use their own Python.
+    - id: python
+      shell: bash
+      run: |
+        for py in python3 python; do
+          if "$py" -c 'import sys; sys.exit(sys.version_info < (3, 11))' 2>/dev/null; then
+            echo "bin=$py" >> "$GITHUB_OUTPUT"
+            break
+          fi
+        done
+    - if: steps.python.outputs.bin == ''
+      uses: actions/setup-python@v7
       with:
         python-version: "3.x"
     # Inputs go through env so they never get spliced into the script.
@@ -21,8 +32,9 @@ runs:
     - shell: bash
       env:
         PYTHONPATH: ${{ github.action_path }}/src
+        KV_LINT_PYTHON: ${{ steps.python.outputs.bin || 'python' }}
         KV_LINT_CONFIG: ${{ inputs.config }}
         KV_LINT_FILES: ${{ inputs.files }}
       run: |
         set -f
-        python -m kv_lint --config "$KV_LINT_CONFIG" $KV_LINT_FILES
+        "$KV_LINT_PYTHON" -m kv_lint --config "$KV_LINT_CONFIG" $KV_LINT_FILES
