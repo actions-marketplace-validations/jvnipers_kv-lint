@@ -19,6 +19,12 @@ inputs:
   languages:
     description: Languages file for phrases/radiopanel, instead of the config
     default: ""
+  report:
+    description: Missing translations report file, instead of the config
+    default: ""
+  json:
+    description: Missing translations JSON report file, instead of the config
+    default: ""
   output:
     description: File to write the issues to, only created when there are any
     default: ""
@@ -50,6 +56,8 @@ runs:
         KV_LINT_PHRASES: ${{ inputs.phrases }}
         KV_LINT_RADIOPANEL: ${{ inputs.radiopanel }}
         KV_LINT_LANGUAGES: ${{ inputs.languages }}
+        KV_LINT_REPORT: ${{ inputs.report }}
+        KV_LINT_JSON: ${{ inputs.json }}
         KV_LINT_OUTPUT: ${{ inputs.output }}
       run: |
         set -f
@@ -57,6 +65,8 @@ runs:
         for glob in $KV_LINT_PHRASES; do args+=(--phrases "$glob"); done
         for glob in $KV_LINT_RADIOPANEL; do args+=(--radiopanel "$glob"); done
         if [ -n "$KV_LINT_LANGUAGES" ]; then args+=(--languages "$KV_LINT_LANGUAGES"); fi
+        if [ -n "$KV_LINT_REPORT" ]; then args+=(--report "$KV_LINT_REPORT"); fi
+        if [ -n "$KV_LINT_JSON" ]; then args+=(--json "$KV_LINT_JSON"); fi
         if [ -n "$KV_LINT_CONFIG" ]; then args+=(--config "$KV_LINT_CONFIG"); fi
         if [ -n "$KV_LINT_OUTPUT" ]; then args+=(--output "$KV_LINT_OUTPUT"); fi
         "$KV_LINT_PYTHON" -m kv_lint "${args[@]}" $KV_LINT_FILES
