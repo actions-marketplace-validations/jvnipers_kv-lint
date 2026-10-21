@@ -14,6 +14,8 @@ SM_BYTES = re.compile(r"(?:\\x[0-9A-Fa-f]{2})+")
 # so anything else either fails the lookup or silently scans for other bytes
 IDA_BYTES = re.compile(r"(?:[0-9A-Fa-f]{2}|\?\??)(?: (?:[0-9A-Fa-f]{2}|\?\??))*")
 NUMBER = re.compile(r"-?(?:0[xX][0-9A-Fa-f]+|\d+)")
+# A heuristic: only scanning the binary proves a signature unique
+MIN_FIXED_BYTES = 5
 
 PLATFORMS = {
     "sourcemod": ("windows", "linux", "mac", "windows64", "linux64", "mac64"),
@@ -263,18 +265,25 @@ class Gamedata(State):
                     doc, child, f"Wildcards in {where}, patch bytes are written as-is"
                 )
             return
-        if all(tokens):
-            problem = "is only wildcards"
-        elif tokens[0]:
-            problem = "starts with a wildcard"
-        elif tokens[-1]:
-            problem = "ends with a wildcard, which matches nothing extra"
+        fixed = tokens.count(False)
+        if fixed == 0:
+            # Matches at the module's first byte:
+            # SourceMod returns its base, cs2kz rejects the multi-match unless allow_multi_match
+            check, problem = (
+                "wildcard-signature",
+                "is only wildcards, so it matches anywhere",
+            )
+        elif fixed < MIN_FIXED_BYTES:
+            check, problem = (
+                "short-signature",
+                f"has only {fixed} fixed byte(s), so it may match more than once",
+            )
         else:
             return
         self._add_issue(
             doc.name,
             child.line,
-            "signature-wildcards",
+            check,
             f"{where[0].upper()}{where[1:]} {problem}",
             doc.context(child.line),
         )

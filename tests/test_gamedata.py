@@ -30,7 +30,7 @@ SM_VALID = r"""
 			"Spawn"
 			{
 				"library"	"server"
-				"windows"	"\x55\x8B\xEC\x2A\x2A\x56"
+				"windows"	"\x55\x8B\xEC\x2A\x2A\x56\x57\x8B"
 				"linux"		"@_ZN11CBaseEntity5SpawnEv"
 			}
 		}
@@ -89,13 +89,14 @@ def test_sourcemod_valid(tmp_path):
     [
         (r"\x55\x8B\c2A\x56", "invalid-signature"),
         ("55 8B EC 56", "invalid-signature"),
-        (r"\x2A\x8B\xEC", "signature-wildcards"),
-        (r"\x55\x8B\x2A", "signature-wildcards"),
+        (r"\x2A\x2A\x2A", "wildcard-signature"),
+        (r"\x55\x8B\x2A\x56", "short-signature"),
+        (r"\x2A\x55\x8B\xEC\x56\x57\x2A", None),
     ],
 )
 def test_sourcemod_signature_bytes(tmp_path, value, check):
-    text = SM_VALID.replace(r"\x55\x8B\xEC\x2A\x2A\x56", value)
-    assert [i.check for i in gamedata(tmp_path, text)] == [check]
+    text = SM_VALID.replace(r"\x55\x8B\xEC\x2A\x2A\x56\x57\x8B", value)
+    assert [i.check for i in gamedata(tmp_path, text)] == ([check] if check else [])
 
 
 def test_sourcemod_keys_and_offsets(tmp_path):
@@ -243,13 +244,16 @@ def test_ida_valid(tmp_path):
         ("40 53 57 48 ", "invalid-signature"),
         ("4053 57 48", "invalid-signature"),
         (r"\x40\x53\x57", "invalid-signature"),
-        ("?? 53 57 48", "signature-wildcards"),
-        ("40 53 57 ?", "signature-wildcards"),
+        ("?? ?? ??", "wildcard-signature"),
+        ("40 ?? 53 57", "short-signature"),
+        ("?? 40 53 57 48 81 ??", None),
     ],
 )
 def test_ida_signature_bytes(tmp_path, value, check):
     text = IDA_VALID.replace("40 53 57 48 81 EC ?? ?? ?? ?? 48 8B D9", value)
-    assert [i.check for i in gamedata(tmp_path, text, "ida")] == [check]
+    assert [i.check for i in gamedata(tmp_path, text, "ida")] == (
+        [check] if check else []
+    )
 
 
 def test_ida_rules(tmp_path):
