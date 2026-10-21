@@ -1,16 +1,24 @@
 [build-system]
-requires = ["hatchling"]
+requires = ["hatchling", "hatch-vcs"]
 build-backend = "hatchling.build"
 
 [project]
 name = "kv-lint"
-version = "1.0.0"
+dynamic = ["version"]
 description = "Linter for Valve KeyValues files, with rules for Sourcemod style translations"
 readme = "README.md"
 requires-python = ">=3.11"
 
 [project.scripts]
 kv-lint = "kv_lint.cli:main"
+
+[tool.hatch.version]
+source = "vcs"
+
+# Only vX.Y.Z tags: the moving major tag (v1) sits on the same commit
+[tool.hatch.version.raw-options]
+git_describe_command = "git describe --dirty --tags --long --match v*.*.*"
+fallback_version = "0.0.0"
 
 [tool.hatch.build.targets.wheel]
 packages = ["src/kv_lint"]
