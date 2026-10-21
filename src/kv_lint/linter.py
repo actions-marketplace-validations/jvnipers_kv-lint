@@ -200,23 +200,23 @@ class Linter:
     ) -> None:
         # A lookup returns the first match, but mm-utils kv::LoadFile passes repeats on,
         # so this is only an error where the caller says so. [$X] keys repeat by design.
+        # Case-sensitive like mm-utils, where "None" and "none" are separate phrases.
         seen: dict[str, int] = {}
         where = f"in '{parent}'" if parent is not None else "at top level"
 
         for node in nodes:
             if node.condition is None:
-                folded = node.key.casefold()
-                if folded in seen:
+                if node.key in seen:
                     self.add_issue(
                         filename,
                         node.line,
                         severity,
                         "Duplicate",
                         f"Duplicate key '{node.key}' {where}",
-                        f"First occurrence at line {seen[folded]}",
+                        f"First occurrence at line {seen[node.key]}",
                     )
                 else:
-                    seen[folded] = node.line
+                    seen[node.key] = node.line
             if node.children is not None:
                 self._check_duplicate_keys(filename, node.children, node.key, severity)
 

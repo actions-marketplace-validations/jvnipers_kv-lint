@@ -112,7 +112,7 @@ def test_parse_errors(text, expected):
     assert errors == expected
 
 
-def test_generic_duplicates_are_case_insensitive_warnings_and_skip_conditionals(
+def test_generic_duplicates_are_case_sensitive_warnings_and_skip_conditionals(
     tmp_path,
 ):
     write(
@@ -122,13 +122,14 @@ def test_generic_duplicates_are_case_insensitive_warnings_and_skip_conditionals(
     {
     	"Key"	"1"
     	"key"	"2"
+    	"key"	"3"
     	"os"	"a"	[$WIN64]
     	"os"	"b"	[$LINUX]
     }
     """},
     )
     issues = run(tmp_path, FileSet(["cfg/*.cfg"]))
-    assert summary(issues) == [("cfg/a.cfg", 4, "warning", "Duplicate")]
+    assert summary(issues) == [("cfg/a.cfg", 5, "warning", "Duplicate")]
 
 
 def test_generic_whitespace_and_lint_ignore(tmp_path):
