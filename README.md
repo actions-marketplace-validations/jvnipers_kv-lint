@@ -3,7 +3,8 @@
 Linter for Valve KeyValues (KV1) files. Every file gets syntax, duplicate key and whitespace checks, file sets can add:
 
 - `phrases`: `*.phrases.txt` (placeholders, printf specifiers, color tags, language codes). `style`:
-  - `sourcemod` (default): checked against `en`
+  - `sourcemod` (default): checked against `en`.
+  Language folders (`translations/de/x.phrases.txt`) merge into the base file, and SourceMod's `languages.cfg` works as the languages file
   - `mm-utils`: checked against the phrase name, as mm-utils does at load
 - `radiopanel`: per-language RadioPanel menus checked against `english.txt`
 

@@ -15,6 +15,7 @@ CHECKS = {
     "missing-placeholder": "error",
     "format-mismatch": "error",
     "unknown-tag": "warning",
+    "unmatched-brace": "warning",
     "empty-translation": "warning",
     "truncated-translation": "warning",
     "missing-menu-reference": "error",

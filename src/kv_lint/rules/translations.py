@@ -12,13 +12,24 @@ from .. import kv
 from ..linter import Document, Linter
 from .base import RuleSet, State
 
+TAG = re.compile(r"\{([^{}]*)\}")
+
+
+@dataclass
+class Entry:
+    file: str
+    line: int
+    value: str
+
 
 @dataclass
 class PhraseBlock:
     name: str
+    file: str
     start_line: int
     end_line: int
-    languages: dict = field(default_factory=dict)
+    style: str = "sourcemod"
+    languages: dict[str, Entry] = field(default_factory=dict)
     format_spec: Optional[str] = None
     placeholders: set = field(default_factory=set)
     ignored: bool = False
@@ -163,7 +174,10 @@ class Translations(State):
         self._add_issue = linter.add_issue
         languages_path = config.root / config.languages if config.languages else None
 
+        # Base file -> its phrases, with language folder files merged in
         self.all_phrase_blocks: dict[str, list[PhraseBlock]] = {}
+        self._phrases: dict[tuple[str, str], PhraseBlock] = {}
+        self.docs: dict[str, Document] = {}
         self.global_languages: set[str] = set()
 
         self.languages_source = (
@@ -205,6 +219,9 @@ class Translations(State):
             for child in node.children
             if child.value is not None
         }
+        # config.txt maps names to codes ("english" "en"), SourceMod's languages.cfg the other way
+        if "en" in name_to_code and "en" not in name_to_code.values():
+            name_to_code = {name.lower(): code for code, name in name_to_code.items()}
 
         if name_to_code:
             print(f"Loaded {len(name_to_code)} language entries from {path.name}")
@@ -219,15 +236,17 @@ class Translations(State):
         return code
 
     def _extract_placeholders(self, value: str) -> set[str]:
-        tags = set(re.findall(r"\{([^}]+)\}", value))
         return {
             tag
-            for tag in tags
+            for tag in TAG.findall(value)
             if tag.lower() not in self.KNOWN_COLOR_TAGS and not tag.startswith("#")
         }
 
     def _extract_printf_specifiers(self, value: str) -> list[str]:
         return [s for s in self.PRINTF_SPECIFIER.findall(value) if s != "%%"]
+
+    def _context(self, entry: Entry) -> Optional[str]:
+        return self.docs[entry.file].context(entry.line)
 
     def finish(self) -> None:
         for blocks in self.all_phrase_blocks.values():
@@ -235,11 +254,28 @@ class Translations(State):
                 if not block.ignored:
                     self.global_languages.update(block.languages.keys())
 
+        for blocks in self.all_phrase_blocks.values():
+            for block in blocks:
+                if block.style == "mm-utils":
+                    self._check_mm_utils_phrase(block)
+                else:
+                    self._check_phrase_format_tags(block)
+                self._check_phrase_block(block)
+
         self._check_language_consistency()
 
+    def _base_file(self, doc: Document) -> str:
+        # SourceMod: translations/de/x.phrases.txt adds "de" to translations/x.phrases.txt
+        base = doc.path.parent.parent / doc.path.name
+        if doc.path.parent.name in self.known_languages and base.is_file():
+            return self.linter.display_name(base)
+        return doc.name
+
     def lint_phrases(self, doc: Document, style: str) -> None:
+        self.docs[doc.name] = doc
         tracker = self.linter.ignore_trackers[doc.name]
-        blocks = []
+        base = self._base_file(doc)
+        blocks = self.all_phrase_blocks.setdefault(base, [])
 
         for root in doc.nodes:
             if root.children is None:
@@ -264,7 +300,11 @@ class Translations(State):
                     continue
 
                 block = PhraseBlock(
-                    name=node.key, start_line=node.line, end_line=node.end_line
+                    name=node.key,
+                    file=doc.name,
+                    start_line=node.line,
+                    end_line=node.end_line,
+                    style=style,
                 )
                 block.ignored = tracker.is_range_ignored(
                     block.start_line, block.end_line
@@ -284,150 +324,189 @@ class Translations(State):
                         block.placeholders = self._parse_format_spec(child.value)
                     elif child.key not in block.languages:
                         # Duplicates are reported by the generic duplicate key check
-                        block.languages[child.key] = (child.line, child.value)
+                        block.languages[child.key] = Entry(
+                            doc.name, child.line, child.value
+                        )
 
-                blocks.append(block)
+                existing = self._phrases.get((base, node.key))
+                if existing is None:
+                    self._phrases[(base, node.key)] = block
+                    blocks.append(block)
+                elif existing.file != doc.name:
+                    self._merge(existing, block, block.file == base)
+                # A phrase repeated in one file is a duplicate key, and lookups take the first
 
-        self.all_phrase_blocks[doc.name] = blocks
-        if style == "mm-utils":
-            self._check_mm_utils_phrases(doc, blocks)
-        else:
-            self._check_phrase_format_tags(doc, blocks)
-        self._check_phrase_blocks(doc.name, blocks, style)
+    def _merge(
+        self, block: PhraseBlock, other: PhraseBlock, other_is_base: bool
+    ) -> None:
+        # The base file's phrase sets the location, #format and ignore state
+        if other_is_base:
+            block.file, block.start_line, block.end_line = (
+                other.file,
+                other.start_line,
+                other.end_line,
+            )
+            block.ignored, block.style = other.ignored, other.style
+        if block.format_spec is None:
+            block.format_spec, block.placeholders = (
+                other.format_spec,
+                other.placeholders,
+            )
+        if other.ignored and not other_is_base:
+            return
+        for lang, entry in other.languages.items():
+            if lang not in block.languages:
+                block.languages[lang] = entry
+                continue
+            kept, dropped = (
+                (entry, block.languages[lang])
+                if other_is_base
+                else (block.languages[lang], entry)
+            )
+            block.languages[lang] = kept
+            self._add_issue(
+                dropped.file,
+                dropped.line,
+                "duplicate-key",
+                f"Duplicate '{lang}' translation for phrase '{block.name}'",
+                f"Also at {kept.file}:{kept.line}",
+            )
 
     def _parse_format_spec(self, format_value: str) -> set[str]:
+        # cs2kz names them ("player:s"), SourceMod numbers them ("{1:s},{2:d}")
         placeholders = set()
         for part in format_value.split(","):
-            part = part.strip()
+            part = part.strip().strip("{}")
             if ":" in part:
                 part = part.split(":")[0].strip()
             if part:
                 placeholders.add(part)
         return placeholders
 
-    def _check_phrase_format_tags(
-        self, doc: Document, blocks: list[PhraseBlock]
-    ) -> None:
-        for block in blocks:
-            valid_placeholders = set(block.placeholders)
-            if "en" in block.languages:
-                valid_placeholders.update(
-                    self._extract_placeholders(block.languages["en"][1])
-                )
-
-            for line_num, value in block.languages.values():
-                for tag in re.findall(r"\{([^}]+)\}", value):
-                    tag_lower = tag.lower()
-                    if (
-                        tag_lower not in self.KNOWN_COLOR_TAGS
-                        and tag not in valid_placeholders
-                        and not re.match(r"^\d+$", tag)
-                        and not tag.startswith("#")
-                    ):
-                        self._add_issue(
-                            doc.name,
-                            line_num,
-                            "unknown-tag",
-                            f"Unknown format tag: {{{tag}}}",
-                            doc.context(line_num),
-                        )
-
-    def _check_mm_utils_phrases(self, doc: Document, blocks: list[PhraseBlock]) -> None:
-        for block in blocks:
-            name_args = format_args(block.name)
-            # Non-color tags in the name are filled by the plugin itself (e.g. cs2menus FillTemplate)
-            placeholders = (
-                set(re.findall(r"\{([^}]+)\}", block.name)) - self.MM_UTILS_COLOR_TAGS
-            )
-            for lang, (line_num, value) in block.languages.items():
-                tags = re.findall(r"\{([^}]+)\}", value)
-                missing = placeholders - set(tags)
-                if not block.ignored and missing:
-                    self._add_issue(
-                        doc.name,
-                        line_num,
-                        "missing-placeholder",
-                        f"Missing placeholder(s) {{{', '.join(sorted(missing))}}} in '{lang}' translation for '{block.name}' (present in the phrase name)",
-                    )
-                for tag in tags:
-                    if tag not in self.MM_UTILS_COLOR_TAGS and tag not in placeholders:
-                        self._add_issue(
-                            doc.name,
-                            line_num,
-                            "unknown-tag",
-                            f"Unknown color tag: {{{tag}}}",
-                            doc.context(line_num),
-                        )
-                if not block.ignored and format_args(value) != name_args:
-                    self._add_issue(
-                        doc.name,
-                        line_num,
-                        "format-mismatch",
-                        f"Format arguments ({format_args(value) or 'none'}) in '{lang}' translation for '{block.name}' "
-                        f"don't match the phrase name ({name_args or 'none'}), so mm-utils leaves it out",
-                    )
-
-    def _check_phrase_blocks(
-        self, filename: str, blocks: list[PhraseBlock], style: str
-    ) -> None:
-        for block in blocks:
-            if block.ignored:
-                continue
-
-            if "en" not in block.languages:
+    def _tags(self, block: PhraseBlock, lang: str, entry: Entry) -> list[str]:
+        stray = TAG.sub("", entry.value)
+        for brace in "{}":
+            if brace in stray:
                 self._add_issue(
-                    filename,
-                    block.start_line,
-                    "missing-english",
-                    f"Missing English ('en') translation for phrase '{block.name}'",
+                    entry.file,
+                    entry.line,
+                    "unmatched-brace",
+                    f"Unmatched '{brace}' in '{lang}' translation for '{block.name}'",
+                    self._context(entry),
+                )
+        return TAG.findall(entry.value)
+
+    def _check_phrase_format_tags(self, block: PhraseBlock) -> None:
+        valid_placeholders = set(block.placeholders)
+        if "en" in block.languages:
+            valid_placeholders.update(
+                self._extract_placeholders(block.languages["en"].value)
+            )
+
+        for lang, entry in block.languages.items():
+            for tag in self._tags(block, lang, entry):
+                if (
+                    tag.lower() not in self.KNOWN_COLOR_TAGS
+                    and tag not in valid_placeholders
+                    and not re.match(r"^\d+$", tag)
+                    and not tag.startswith("#")
+                ):
+                    self._add_issue(
+                        entry.file,
+                        entry.line,
+                        "unknown-tag",
+                        f"Unknown format tag: {{{tag}}}",
+                        self._context(entry),
+                    )
+
+    def _check_mm_utils_phrase(self, block: PhraseBlock) -> None:
+        name_args = format_args(block.name)
+        # Non-color tags in the name are filled by the plugin itself (e.g. cs2menus FillTemplate)
+        placeholders = set(TAG.findall(block.name)) - self.MM_UTILS_COLOR_TAGS
+        for lang, entry in block.languages.items():
+            tags = self._tags(block, lang, entry)
+            missing = placeholders - set(tags)
+            if not block.ignored and missing:
+                self._add_issue(
+                    entry.file,
+                    entry.line,
+                    "missing-placeholder",
+                    f"Missing placeholder(s) {{{', '.join(sorted(missing))}}} in '{lang}' translation for '{block.name}' (present in the phrase name)",
+                )
+            for tag in tags:
+                if tag not in self.MM_UTILS_COLOR_TAGS and tag not in placeholders:
+                    self._add_issue(
+                        entry.file,
+                        entry.line,
+                        "unknown-tag",
+                        f"Unknown color tag: {{{tag}}}",
+                        self._context(entry),
+                    )
+            if not block.ignored and format_args(entry.value) != name_args:
+                self._add_issue(
+                    entry.file,
+                    entry.line,
+                    "format-mismatch",
+                    f"Format arguments ({format_args(entry.value) or 'none'}) in '{lang}' translation for '{block.name}' "
+                    f"don't match the phrase name ({name_args or 'none'}), so mm-utils leaves it out",
                 )
 
-            for lang, (line_num, value) in block.languages.items():
-                if not value.strip():
+    def _check_phrase_block(self, block: PhraseBlock) -> None:
+        if block.ignored:
+            return
+
+        if "en" not in block.languages:
+            self._add_issue(
+                block.file,
+                block.start_line,
+                "missing-english",
+                f"Missing English ('en') translation for phrase '{block.name}'",
+            )
+
+        for lang, entry in block.languages.items():
+            if not entry.value.strip():
+                self._add_issue(
+                    entry.file,
+                    entry.line,
+                    "empty-translation",
+                    f"Empty translation for language '{lang}' in phrase '{block.name}'",
+                )
+            elif entry.value.rstrip().endswith("[...]"):
+                self._add_issue(
+                    entry.file,
+                    entry.line,
+                    "truncated-translation",
+                    f"Translation appears to be truncated for language '{lang}' in phrase '{block.name}'",
+                    entry.value[:60] + "...",
+                )
+
+        if "en" in block.languages and block.style == "sourcemod":
+            en_value = block.languages["en"].value
+            en_placeholders = self._extract_placeholders(en_value)
+            en_specifiers = self._extract_printf_specifiers(en_value)
+
+            for lang, entry in block.languages.items():
+                if lang == "en":
+                    continue
+
+                missing = en_placeholders - self._extract_placeholders(entry.value)
+                if missing:
                     self._add_issue(
-                        filename,
-                        line_num,
-                        "empty-translation",
-                        f"Empty translation for language '{lang}' in phrase '{block.name}'",
+                        entry.file,
+                        entry.line,
+                        "missing-placeholder",
+                        f"Missing placeholder(s) {{{', '.join(sorted(missing))}}} in '{lang}' translation for '{block.name}' (present in 'en')",
                     )
-                elif value.rstrip().endswith("[...]"):
+
+                # printf args are positional, so order matters as well as count
+                lang_specifiers = self._extract_printf_specifiers(entry.value)
+                if lang_specifiers != en_specifiers:
                     self._add_issue(
-                        filename,
-                        line_num,
-                        "truncated-translation",
-                        f"Translation appears to be truncated for language '{lang}' in phrase '{block.name}'",
-                        value[:60] + "...",
+                        entry.file,
+                        entry.line,
+                        "format-mismatch",
+                        f"Format specifiers ({' '.join(lang_specifiers) or 'none'}) in '{lang}' translation for '{block.name}' don't match 'en' ({' '.join(en_specifiers) or 'none'})",
                     )
-
-            if "en" in block.languages and style == "sourcemod":
-                en_value = block.languages["en"][1]
-                en_placeholders = self._extract_placeholders(en_value)
-                en_specifiers = self._extract_printf_specifiers(en_value)
-
-                for lang, (line_num, value) in block.languages.items():
-                    if lang == "en":
-                        continue
-
-                    lang_placeholders = self._extract_placeholders(value)
-                    missing = en_placeholders - lang_placeholders
-
-                    if missing:
-                        self._add_issue(
-                            filename,
-                            line_num,
-                            "missing-placeholder",
-                            f"Missing placeholder(s) {{{', '.join(sorted(missing))}}} in '{lang}' translation for '{block.name}' (present in 'en')",
-                        )
-
-                    # printf args are positional, so order matters as well as count
-                    lang_specifiers = self._extract_printf_specifiers(value)
-                    if lang_specifiers != en_specifiers:
-                        self._add_issue(
-                            filename,
-                            line_num,
-                            "format-mismatch",
-                            f"Format specifiers ({' '.join(lang_specifiers) or 'none'}) in '{lang}' translation for '{block.name}' don't match 'en' ({' '.join(en_specifiers) or 'none'})",
-                        )
 
     def _check_language_consistency(self) -> None:
         if self.global_languages:
@@ -435,16 +514,16 @@ class Translations(State):
                 f"Languages found across all files: {sorted(self.global_languages)}\n"
             )
 
-        for filename, blocks in sorted(self.all_phrase_blocks.items()):
+        for _, blocks in sorted(self.all_phrase_blocks.items()):
             for block in blocks:
                 if block.ignored:
                     continue
                 for lang in sorted(block.languages.keys()):
                     if lang not in self.known_languages:
-                        line_num = block.languages[lang][0]
+                        entry = block.languages[lang]
                         self._add_issue(
-                            filename,
-                            line_num,
+                            entry.file,
+                            entry.line,
                             "unknown-language",
                             f"Unknown language code '{lang}' in phrase '{block.name}' (not in {self.languages_source})",
                         )
@@ -771,7 +850,7 @@ class Translations(State):
                     {
                         "name": block.name,
                         "line": block.start_line,
-                        "english_text": block.languages["en"][1],
+                        "english_text": block.languages["en"].value,
                         "existing_languages": sorted(block.languages.keys()),
                         "missing_languages": missing,
                     }
