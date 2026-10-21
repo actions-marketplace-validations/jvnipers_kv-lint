@@ -441,3 +441,40 @@ def test_cli_inline_argument_errors(tmp_path, monkeypatch, args):
     with pytest.raises(SystemExit) as exc:
         main(args)
     assert exc.value.code == 2
+
+
+def test_missing_menu_language_file_is_info_without_annotation(
+    tmp_path, monkeypatch, capsys
+):
+    languages = LANGUAGES.replace('"german"\t"de"', '"german"\t"de"\n"dutch"\t"nl"')
+    files = {
+        "translations/config.txt": languages,
+        "menu/english.txt": MENU,
+        "menu/german.txt": MENU,
+    }
+    [issue] = menu(tmp_path, files)
+    assert (issue.file, issue.issue_type) == ("menu/", "info")
+    assert str(issue).startswith(
+        "menu/:0: [INFO] Missing: Missing menu translation file: dutch.txt"
+    )
+
+    monkeypatch.chdir(tmp_path)
+    monkeypatch.setenv("GITHUB_ACTIONS", "true")
+    capsys.readouterr()
+    assert (
+        main(
+            [
+                "--radiopanel",
+                "menu/*.txt",
+                "--languages",
+                "translations/config.txt",
+                "--output",
+                "out.txt",
+            ]
+        )
+        == 0
+    )
+    assert "::" not in capsys.readouterr().out
+    assert "[INFO] Missing: Missing menu translation file: dutch.txt" in (
+        tmp_path / "out.txt"
+    ).read_text(encoding="utf-8")

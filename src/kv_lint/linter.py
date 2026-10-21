@@ -17,7 +17,7 @@ class Issue:
     context: Optional[str] = None
 
     def __str__(self) -> str:
-        prefix = "ERROR" if self.issue_type == "error" else "WARNING"
+        prefix = self.issue_type.upper()
         msg = f"{self.file}:{self.line}: [{prefix}] {self.category}: {self.message}"
         if self.context:
             msg += f"\n    Context: {self.context}"
@@ -229,27 +229,25 @@ class Linter:
         for issue in self.issues:
             by_file[issue.file].append(issue)
 
-        errors = sum(1 for i in self.issues if i.issue_type == "error")
-        warnings = sum(1 for i in self.issues if i.issue_type == "warning")
+        def counts(issues: list[Issue], plural: str) -> str:
+            errors = sum(1 for i in issues if i.issue_type == "error")
+            warnings = sum(1 for i in issues if i.issue_type == "warning")
+            infos = sum(1 for i in issues if i.issue_type == "info")
+            text = f"{errors} error{plural}, {warnings} warning{plural}"
+            return text + (f", {infos} info" if infos else "")
 
         lines.append("=" * 70)
-        lines.append(f"SUMMARY: {errors} error(s), {warnings} warning(s)")
+        lines.append(f"SUMMARY: {counts(self.issues, '(s)')}")
         lines.append("=" * 70)
 
         for filename in sorted(by_file.keys()):
             issues = by_file[filename]
-            file_errors = sum(1 for i in issues if i.issue_type == "error")
-            file_warnings = sum(1 for i in issues if i.issue_type == "warning")
-            lines.append(
-                f"\n{filename} ({file_errors} errors, {file_warnings} warnings)"
-            )
+            lines.append(f"\n{filename} ({counts(issues, 's')})")
             lines.append("-" * 50)
             for issue in sorted(issues, key=lambda x: (x.line, x.message)):
                 lines.append(f"  {issue}")
 
         lines.append("\n" + "=" * 70)
-        lines.append(
-            f"TOTAL: {errors} error(s), {warnings} warning(s) in {len(by_file)} file(s)"
-        )
+        lines.append(f"TOTAL: {counts(self.issues, '(s)')} in {len(by_file)} file(s)")
         lines.append("=" * 70)
         return "\n".join(lines)

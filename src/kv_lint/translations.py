@@ -626,7 +626,7 @@ class TranslationRules:
             self._add_issue(
                 menu_dir_name,
                 0,
-                "warning",
+                "info",
                 "Missing",
                 f"Missing menu translation file: {lang_name}.txt (for language code '{lang_code}')",
             )

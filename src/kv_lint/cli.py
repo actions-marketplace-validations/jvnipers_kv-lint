@@ -159,9 +159,11 @@ def main(argv: Optional[list[str]] = None) -> int:
         if config.json:
             translations.generate_missing_languages_json(config.root / config.json)
 
+    # Info is expected noise (e.g. untranslated menus), kept to the summary and output file
     if os.environ.get("GITHUB_ACTIONS") == "true":
         for issue in linter.issues:
-            print(github_annotation(issue, linter.root / issue.file))
+            if issue.issue_type != "info":
+                print(github_annotation(issue, linter.root / issue.file))
 
     errors = sum(1 for i in linter.issues if i.issue_type == "error")
     return 1 if errors > 0 else 0
