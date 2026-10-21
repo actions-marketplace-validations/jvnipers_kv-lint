@@ -1,6 +1,10 @@
 name: Test
 
-on: [push, pull_request]
+on:
+  push:
+    branches: ["**"]
+  pull_request:
+  workflow_call:
 
 jobs:
   test:
@@ -11,3 +15,53 @@ jobs:
         with:
           python-version: "3.x"
       - run: pip install pytest && pytest -q
+
+  action:
+    name: Action (${{ matrix.os }})
+    strategy:
+      fail-fast: false
+      matrix:
+        os: [ubuntu-latest, windows-latest]
+    runs-on: ${{ matrix.os }}
+    defaults:
+      run:
+        shell: bash
+    steps:
+      - uses: actions/checkout@v7
+
+      - name: Config mode
+        uses: ./
+        with:
+          config: tests/fixtures/action/clean/kv-lint.toml
+          output: clean-results.txt
+
+      - name: Inline mode
+        uses: ./
+        with:
+          phrases: tests/fixtures/action/clean/translations/*.phrases.txt
+          phrases-style: mm-utils
+          languages: tests/fixtures/action/clean/translations/config.txt
+          files: tests/fixtures/action/clean/translations/config.txt tests/fixtures/action/clean/configs/*.cfg
+          markdown: inline-summary.md
+          checks: trailing-whitespace=off consecutive-blank-lines=info
+
+      - name: Broken fixture
+        id: broken
+        continue-on-error: true
+        uses: ./
+        with:
+          phrases: tests/fixtures/action/broken/translations/*.phrases.txt
+          phrases-style: mm-utils
+          languages: tests/fixtures/action/broken/translations/config.txt
+          output: broken-results.txt
+
+      - name: Check results
+        env:
+          BROKEN: ${{ steps.broken.outcome }}
+        run: |
+          set -x
+          test "$BROKEN" = failure
+          test ! -e clean-results.txt
+          test -f tests/fixtures/action/clean/missing-translations.json
+          grep -qF '| **Linter Errors** | 0 |' inline-summary.md
+          grep -qF '[ERROR] format-mismatch' broken-results.txt

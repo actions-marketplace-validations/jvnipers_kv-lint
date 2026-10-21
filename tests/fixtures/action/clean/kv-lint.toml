@@ -1,0 +1,10 @@
+languages = "translations/config.txt"
+json = "missing-translations.json"
+
+[[files]]
+glob = "translations/*.phrases.txt"
+rules = "phrases"
+style = "mm-utils"
+
+[[files]]
+glob = ["translations/config.txt", "configs/*.cfg"]

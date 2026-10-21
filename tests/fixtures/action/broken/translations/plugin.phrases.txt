@@ -1,0 +1,8 @@
+"Phrases"
+{
+	"%s joined the server.\n"
+	{
+		"en"	"{green}%s{default} joined the server.\n"
+		"de"	"{green}%d{default} ist dem Server beigetreten.\n"
+	}
+}

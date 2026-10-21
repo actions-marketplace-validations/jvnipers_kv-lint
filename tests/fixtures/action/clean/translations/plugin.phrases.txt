@@ -1,0 +1,13 @@
+"Phrases"
+{
+	"%s joined the server.\n"
+	{
+		"en"	"{green}%s{default} joined the server.\n"
+		"de"	"{green}%s{default} ist dem Server beigetreten.\n"
+	}
+	"Kicked \"%s\" (%d warnings)"
+	{
+		"en"	"Kicked \"%s\" (%d warnings)"
+		"de"	"\"%s\" gekickt (%d Verwarnungen)"
+	}
+}

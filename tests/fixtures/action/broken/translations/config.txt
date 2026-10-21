@@ -1,0 +1,5 @@
+"Languages"
+{
+	"english"	"en"
+	"german"	"de"
+}
