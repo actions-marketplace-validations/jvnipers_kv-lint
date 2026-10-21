@@ -5,7 +5,7 @@ build-backend = "hatchling.build"
 [project]
 name = "kv-lint"
 version = "1.0.0"
-description = "Linter for Valve KeyValues files, with rules for Metamod translations"
+description = "Linter for Valve KeyValues files, with rules for Sourcemod style translations"
 readme = "README.md"
 requires-python = ">=3.11"
 
