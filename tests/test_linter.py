@@ -381,3 +381,63 @@ def test_annotation_escapes_and_skips_non_file(tmp_path):
     )
     issue.context = "100%\nmore"
     assert github_annotation(issue, None).endswith("translations%0A100%25%0Amore")
+
+
+def test_cli_output_only_written_when_there_are_issues(tmp_path, monkeypatch):
+    write(
+        tmp_path,
+        {"cfg/a.cfg": '"Root"\n{\n\t"k"\t"v"\n}\n', "cfg/b.cfg": '"Root"\n{\n'},
+    )
+    monkeypatch.chdir(tmp_path)
+    main(["cfg/a.cfg", "--output", "clean.txt"])
+    main(["cfg/b.cfg", "--output", "results.txt"])
+    assert not (tmp_path / "clean.txt").exists()
+    assert "cfg/b.cfg:2: [ERROR] Syntax: Unclosed opening brace" in (
+        tmp_path / "results.txt"
+    ).read_text(encoding="utf-8")
+
+
+def test_cli_inline_rules_without_config(tmp_path, monkeypatch):
+    write(
+        tmp_path,
+        {
+            "translations/config.txt": LANGUAGES,
+            "translations/plugin.phrases.txt": CLEAN.replace(
+                "Hallo {name}", 'Hallo \\"{name}\\"'
+            ),
+            "configs/core.cfg": '"Root"\n{\n\t"k"\t"C:\dir\\"\n}\n',
+        },
+    )
+    monkeypatch.chdir(tmp_path)
+    args = [
+        "--phrases",
+        "translations/*.phrases.txt",
+        "--languages",
+        "translations/config.txt",
+        "translations/*.txt",
+        "configs/*.cfg",
+        "--json",
+        "missing.json",
+    ]
+    assert main(args) == 0
+    assert (tmp_path / "missing.json").exists()
+
+    (tmp_path / "translations/plugin.phrases.txt").write_text(
+        CLEAN.replace("Hallo {name}", "Hallo %s"), encoding="utf-8"
+    )
+    assert main(args) == 1
+
+
+@pytest.mark.parametrize(
+    "args",
+    [
+        ["--config", "kv-lint.toml", "--phrases", "*.phrases.txt"],
+        ["--config", "kv-lint.toml", "cfg/*.cfg"],
+        ["--languages", "translations/config.txt"],
+    ],
+)
+def test_cli_inline_argument_errors(tmp_path, monkeypatch, args):
+    monkeypatch.chdir(tmp_path)
+    with pytest.raises(SystemExit) as exc:
+        main(args)
+    assert exc.value.code == 2

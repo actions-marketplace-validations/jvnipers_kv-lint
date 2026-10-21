@@ -31,12 +31,28 @@ glob = ["configs/*.cfg", "gamedata/*.txt"]
 ```yaml
 - uses: actions/checkout@v7
 - uses: jvnipers/kv-lint@v1
+  with:
+    output: kv-lint-results.txt # optional, only written when there are issues
+```
+
+Without a `kv-lint.toml`, pass the file sets as inputs (space-separated globs):
+
+```yaml
+- uses: jvnipers/kv-lint@v1
+  with:
+    phrases: translations/*.phrases.txt
+    languages: translations/config.txt
+    files: translations/config.txt configs/*.cfg
 ```
 
 ```bash
 uvx --from git+https://github.com/jvnipers/kv-lint kv-lint              # reads kv-lint.toml
 uvx --from git+https://github.com/jvnipers/kv-lint kv-lint "cfg/*.txt"  # generic checks only
+uvx --from git+https://github.com/jvnipers/kv-lint kv-lint --phrases "translations/*.phrases.txt" \
+    --languages translations/config.txt "configs/*.cfg"                 # no kv-lint.toml
 ```
+
+Inline options (`--phrases`, `--radiopanel`, `--languages`, `--report`, `--json`) can't be combined with `--config`.
 
 ## Ignoring
 

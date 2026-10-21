@@ -88,28 +88,70 @@ def main(argv: Optional[list[str]] = None) -> int:
     parser.add_argument(
         "files",
         nargs="*",
-        help="globs to check with the generic KeyValues checks only, "
-        "when omitted, files and rules come from the config",
+        help="globs to check with the generic KeyValues checks only",
     )
     parser.add_argument(
         "--config",
-        default="kv-lint.toml",
         help="config file. Globs in it are relative to its directory (default: kv-lint.toml)",
+    )
+    parser.add_argument(
+        "--phrases",
+        action="append",
+        default=[],
+        metavar="GLOB",
+        help="check matching files with the phrases rules, repeatable",
+    )
+    parser.add_argument(
+        "--radiopanel",
+        action="append",
+        default=[],
+        metavar="GLOB",
+        help="check matching files with the radiopanel rules, repeatable",
+    )
+    parser.add_argument("--languages", help="languages file for phrases/radiopanel")
+    parser.add_argument("--report", help="write the missing translations report")
+    parser.add_argument("--json", help="write the missing translations JSON report")
+    parser.add_argument(
+        "--output",
+        help="also write the issues to this file, only when there are any",
     )
     args = parser.parse_args(argv)
 
-    if args.files:
-        config = Config(root=Path.cwd(), files=[FileSet(args.files)])
+    # Without any of these, the config file is used. Globs are relative to the cwd.
+    inline = [
+        args.files,
+        args.phrases,
+        args.radiopanel,
+        args.languages,
+        args.report,
+        args.json,
+    ]
+    if any(inline):
+        if args.config:
+            parser.error("--config can't be combined with files or rule/report options")
+        # Rule sets first, as a file only gets the first matching entry's rules
+        files = [FileSet(args.phrases, "phrases")] if args.phrases else []
+        if args.radiopanel:
+            files.append(FileSet(args.radiopanel, "radiopanel"))
+        if args.files:
+            files.append(FileSet(args.files))
+        if not files:
+            parser.error("no files to check, pass globs, --phrases or --radiopanel")
+        config = Config(Path.cwd(), files, args.languages, args.report, args.json)
     else:
+        path = args.config or "kv-lint.toml"
         try:
-            config = load_config(Path(args.config))
+            config = load_config(Path(path))
         except FileNotFoundError:
-            parser.error(f"{args.config} not found. Create it or pass files to check")
+            parser.error(f"{path} not found. Create it or pass files to check")
         except ConfigError as e:
             parser.error(str(e))
 
     linter, translations = lint(config)
-    linter.print_summary()
+    summary = linter.summary()
+    print(summary)
+    if args.output and linter.issues:
+        Path(args.output).write_text(summary + "\n", encoding="utf-8")
 
     if translations:
         if config.report:

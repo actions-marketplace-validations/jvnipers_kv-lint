@@ -220,11 +220,11 @@ class Linter:
             if node.children is not None:
                 self._check_duplicate_keys(filename, node.children, node.key, severity)
 
-    def print_summary(self) -> None:
+    def summary(self) -> str:
         if not self.issues:
-            print("No issues found!")
-            return
+            return "No issues found!"
 
+        lines = []
         by_file: dict[str, list[Issue]] = defaultdict(list)
         for issue in self.issues:
             by_file[issue.file].append(issue)
@@ -232,21 +232,24 @@ class Linter:
         errors = sum(1 for i in self.issues if i.issue_type == "error")
         warnings = sum(1 for i in self.issues if i.issue_type == "warning")
 
-        print("=" * 70)
-        print(f"SUMMARY: {errors} error(s), {warnings} warning(s)")
-        print("=" * 70)
+        lines.append("=" * 70)
+        lines.append(f"SUMMARY: {errors} error(s), {warnings} warning(s)")
+        lines.append("=" * 70)
 
         for filename in sorted(by_file.keys()):
             issues = by_file[filename]
             file_errors = sum(1 for i in issues if i.issue_type == "error")
             file_warnings = sum(1 for i in issues if i.issue_type == "warning")
-            print(f"\n{filename} ({file_errors} errors, {file_warnings} warnings)")
-            print("-" * 50)
+            lines.append(
+                f"\n{filename} ({file_errors} errors, {file_warnings} warnings)"
+            )
+            lines.append("-" * 50)
             for issue in sorted(issues, key=lambda x: (x.line, x.message)):
-                print(f"  {issue}")
+                lines.append(f"  {issue}")
 
-        print("\n" + "=" * 70)
-        print(
+        lines.append("\n" + "=" * 70)
+        lines.append(
             f"TOTAL: {errors} error(s), {warnings} warning(s) in {len(by_file)} file(s)"
         )
-        print("=" * 70)
+        lines.append("=" * 70)
+        return "\n".join(lines)
