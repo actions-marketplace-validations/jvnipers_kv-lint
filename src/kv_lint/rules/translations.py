@@ -33,7 +33,7 @@ class PhraseBlock:
     style: str = "sourcemod"
     languages: dict[str, Entry] = field(default_factory=dict)
     format_spec: Optional[str] = None
-    placeholders: set = field(default_factory=set)
+    placeholders: set[str] = field(default_factory=set)
     ignored: bool = False
 
 
@@ -41,7 +41,6 @@ class PhraseBlock:
 class MenuCommand:
     name: str
     start_line: int
-    end_line: int
     hotkey: Optional[str] = None
     label: Optional[str] = None
     cmd: Optional[str] = None
@@ -51,11 +50,8 @@ class MenuCommand:
 class MenuGroup:
     name: str
     start_line: int
-    end_line: int
-    hotkey: Optional[str] = None
-    title: Optional[str] = None
     timeout: Optional[str] = None
-    commands: list = field(default_factory=list)
+    commands: list[MenuCommand] = field(default_factory=list)
 
 
 def _sections(node: kv.Node) -> list[kv.Node]:
@@ -165,9 +161,7 @@ class Translations(State):
         self.docs: dict[str, Document] = {}
         self.global_languages: set[str] = set()
 
-        self.languages_source = (
-            languages_path.name if languages_path else "default language list"
-        )
+        self.languages_source = "default language list"
         self.language_map, self.known_languages = self._parse_languages(languages_path)
         # "koreana" and "korean" are both "ko"
         self._code_to_names: dict[str, list[str]] = defaultdict(list)
@@ -177,12 +171,10 @@ class Translations(State):
 
         self.menu_dir: Optional[Path] = None
         self.menu_files: dict[str, list[MenuGroup]] = {}
-        self.menu_languages: set[str] = set()
         self.menu_file_count = 0
         self._report: Optional[dict] = None
 
     def _default_language_data(self) -> tuple[dict[str, str], set[str]]:
-        self.languages_source = "default language list"
         return dict(self.DEFAULT_LANGUAGE_MAP), set(self.DEFAULT_LANGUAGE_MAP.values())
 
     def _parse_languages(self, path: Optional[Path]) -> tuple[dict[str, str], set[str]]:
@@ -215,15 +207,11 @@ class Translations(State):
 
         if name_to_code:
             print(f"Loaded {len(name_to_code)} language entries from {path.name}")
+            self.languages_source = path.name
             return name_to_code, set(name_to_code.values())
         else:
             print(f"No languages found in {path.name}, using default language list")
             return self._default_language_data()
-
-    def _get_language_display_name(self, code: str) -> str:
-        if code in self._code_to_name:
-            return f"{code} ({self._code_to_name[code]})"
-        return code
 
     @staticmethod
     def _unescape(block: PhraseBlock, value: str) -> str:
@@ -254,9 +242,6 @@ class Translations(State):
                     self.global_languages.update(
                         block.languages.keys() & self.known_languages
                     )
-
-        for blocks in self.all_phrase_blocks.values():
-            for block in blocks:
                 if block.style == "mm-utils":
                     self._check_mm_utils_phrase(block)
                 else:
@@ -614,7 +599,6 @@ class Translations(State):
 
         if english is not None:
             self.menu_files["english.txt"] = self._parse_menu_file(english)
-            self.menu_languages.add("english")
         english_groups = self.menu_files.get("english.txt")
         if english_groups is None:
             if (self.menu_dir / "english.txt").exists():
@@ -628,7 +612,6 @@ class Translations(State):
             if doc is english:
                 continue
 
-            self.menu_languages.add(doc.path.stem)
             lang_groups = self._parse_menu_file(doc)
             self.menu_files[doc.path.name] = lang_groups
             self._compare_menu_to_english(doc, lang_groups, english_groups)
@@ -647,7 +630,7 @@ class Translations(State):
     def _parse_menu_group(self, doc: Document, node: kv.Node) -> MenuGroup:
         if not node.key:
             self._add_issue(doc.name, node.line, "menu-structure", "Empty group name")
-        group = MenuGroup(name=node.key, start_line=node.line, end_line=node.end_line)
+        group = MenuGroup(name=node.key, start_line=node.line)
 
         for child in node.children or []:
             if child.value is None:
@@ -667,10 +650,8 @@ class Translations(State):
                     "Empty key in key-value pair",
                     doc.context(child.line),
                 )
-            elif key == "hotkey":
-                group.hotkey = child.value
-            elif key == "title":
-                group.title = child.value
+            elif key in ("hotkey", "title"):
+                pass  # Valid, but not compared between languages
             elif key == "timeout":
                 group.timeout = child.value
             elif key in self.MENU_COMMAND_KEYS:
@@ -695,9 +676,7 @@ class Translations(State):
     ) -> MenuCommand:
         if not node.key:
             self._add_issue(doc.name, node.line, "menu-structure", "Empty command name")
-        command = MenuCommand(
-            name=node.key, start_line=node.line, end_line=node.end_line
-        )
+        command = MenuCommand(name=node.key, start_line=node.line)
 
         for child in node.children or []:
             if child.value is None:
@@ -836,10 +815,11 @@ class Translations(State):
 
     def _check_missing_menu_languages(self, menu_dir: Path) -> None:
         missing_menus = []
+        menu_languages = {Path(f).stem for f in self.menu_files}
 
         for lang_code in self.known_languages:
             lang_name = self._menu_name(lang_code)
-            if lang_name and lang_name not in self.menu_languages:
+            if lang_name and lang_name not in menu_languages:
                 menu_file = menu_dir / f"{lang_name}.txt"
                 if not menu_file.exists():
                     missing_menus.append((lang_name, lang_code))
@@ -984,7 +964,7 @@ class Translations(State):
             "languages": languages,
             "files": files,
             "menu": {
-                "languages_with_menu": sorted(self.menu_languages),
+                "languages_with_menu": sorted(Path(f).stem for f in self.menu_files),
                 "missing": menu_missing,
             },
         }
@@ -1002,7 +982,9 @@ class Translations(State):
             coverage = self._coverage_pct(info["translated"], total)
             bar_length = int(coverage / 5)
             bar = "█" * bar_length + "░" * (20 - bar_length)
-            lang_display = self._get_language_display_name(lang)
+            lang_display = (
+                f"{lang} ({info['name']})" if lang in self._code_to_name else lang
+            )
             lines.append(
                 f"  {lang_display:20} [{bar}] {coverage:5.1f}% ({info['translated']}/{total})"
             )

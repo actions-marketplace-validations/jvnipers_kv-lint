@@ -137,9 +137,8 @@ class Gamedata(State):
                             self._entry(doc, style, name, entry, names)
 
     def finish(self) -> None:
-        for folder, section, name, file, line, entry in self.references:
-            if name not in self.names[folder][section]:
-                kind = next(k for k, s in REFERENCES.items() if s == section)
+        for folder, kind, name, file, line, entry in self.references:
+            if name not in self.names[folder][REFERENCES[kind]]:
                 self._add_issue(
                     file,
                     line,
@@ -176,7 +175,14 @@ class Gamedata(State):
             doc.name, node.line, "gamedata-structure", message, doc.context(node.line)
         )
 
-    def _entry(self, doc, style, section, entry, names) -> None:
+    def _entry(
+        self,
+        doc: Document,
+        style: str,
+        section: str,
+        entry: kv.Node,
+        names: dict[str, set[str]],
+    ) -> None:
         if section == "Signatures":
             names["Signatures"].add(entry.key)
             self._signature(doc, style, entry)
@@ -226,7 +232,7 @@ class Gamedata(State):
     def _missing_platform(
         self, doc: Document, kind: str, entry: kv.Node, platforms: set[str]
     ) -> None:
-        families = {p.rstrip("64") for p in platforms} & {"windows", "linux"}
+        families = {p.removesuffix("64") for p in platforms} & {"windows", "linux"}
         if len(families) == 1:
             missing = ({"windows", "linux"} - families).pop()
             self._add_issue(
@@ -400,16 +406,7 @@ class Gamedata(State):
                     continue
                 if child.key == "signature":
                     has_signature = True
-                    self.references.append(
-                        (
-                            _scope(doc.path),
-                            "Signatures",
-                            child.value,
-                            doc.name,
-                            child.line,
-                            entry.key,
-                        )
-                    )
+                    self._reference(doc, entry, "signature", child.value, child.line)
                 elif child.key in ("read", "offset"):
                     if last_offset is not None:
                         self._structure(
@@ -457,19 +454,16 @@ class Gamedata(State):
     def _references(self, doc: Document, entry: kv.Node, node: kv.Node) -> None:
         for child in node.children or []:
             if child.value is not None and child.key in REFERENCES:
-                section = REFERENCES[child.key]
-                self.references.append(
-                    (
-                        _scope(doc.path),
-                        section,
-                        child.value,
-                        doc.name,
-                        child.line,
-                        entry.key,
-                    )
-                )
+                self._reference(doc, entry, child.key, child.value, child.line)
             elif child.children is not None:
                 self._references(doc, entry, child)
+
+    def _reference(
+        self, doc: Document, entry: kv.Node, kind: str, name: str, line: int
+    ) -> None:
+        self.references.append(
+            (_scope(doc.path), kind, name, doc.name, line, entry.key)
+        )
 
 
 class GamedataRules(RuleSet):

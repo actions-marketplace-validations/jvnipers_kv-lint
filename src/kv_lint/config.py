@@ -53,14 +53,13 @@ def check_severities(table: dict, where: str) -> dict[str, str]:
     return dict(table)
 
 
-def check_options(rules: str, options: dict[str, str], where: str) -> dict[str, str]:
+def _check_options(rules: str, options: dict[str, str], where: str) -> None:
     allowed = RULE_SETS[rules].options
     for option, value in options.items():
         if value not in allowed[option]:
             raise ConfigError(
                 f"{where} has unknown {option} '{value}' (expected one of: {', '.join(allowed[option])})"
             )
-    return options
 
 
 def load_config(path: Path) -> Config:
@@ -110,7 +109,7 @@ def load_config(path: Path) -> Config:
             if (value := _optional_str(entry, o, where)) is not None
         }
         if rules:
-            check_options(rules, options, where)
+            _check_options(rules, options, where)
         config.files.append(FileSet(globs, rules, options))
 
     if not config.files:
