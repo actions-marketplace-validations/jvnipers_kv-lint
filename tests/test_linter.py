@@ -172,15 +172,18 @@ def test_clean_phrases(tmp_path):
 
 
 
-def test_olive_is_a_color_not_a_placeholder(tmp_path):
     text = CLEAN.replace("{green}Hello", "{olive}Hello")
     assert phrases(tmp_path, text) == []
 
 
-def test_lightgreen_is_not_a_color(tmp_path):
-    issues = phrases(tmp_path, CLEAN.replace("{green}Hallo", "{lightgreen}Hallo"))
+def test_csgo_lightgreen_is_a_color_not_a_placeholder(tmp_path):
+    assert phrases(tmp_path, CLEAN.replace("{green}Hello", "{lightgreen}Hello")) == []
+
+
+def test_color_tag_case(tmp_path):
+    issues = phrases(tmp_path, CLEAN.replace("{green}Hallo", "{Green}Hallo"))
     assert summary(issues) == [
-        ("translations/plugin.phrases.txt", 7, "warning", "unknown-tag")
+        ("translations/plugin.phrases.txt", 7, "warning", "color-tag-case")
     ]
 
 
@@ -189,6 +192,7 @@ def test_double_brace_is_a_literal_brace(tmp_path):
         "{green}Hallo", "{{ {green}Hallo"
     )
     assert phrases(tmp_path, text) == []
+
 
 def test_missing_placeholder(tmp_path):
     issues = phrases(tmp_path, CLEAN.replace("Hallo {name}", "Hallo"))

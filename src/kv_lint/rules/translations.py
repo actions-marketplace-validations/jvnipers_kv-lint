@@ -144,6 +144,9 @@ class Translations(State):
         "lightred",
         "gold",
     }
+    # SourceMod on CS:GO (e.g. GOKZ's sourcemod-colors.inc) names \x05 lightgreen, cs2kz olive.
+    # A color left out would otherwise count as a placeholder that translations must repeat.
+    SOURCEMOD_COLOR_TAGS = COLOR_TAGS | {"lightgreen"}
 
     # No space flag: "100% of" would otherwise parse as "% o"
     PRINTF_SPECIFIER = re.compile(
@@ -222,7 +225,7 @@ class Translations(State):
         return {
             tag
             for tag in TAG.findall(ESCAPED_BRACE.sub("", value))
-            if tag.lower() not in self.COLOR_TAGS and not tag.startswith("#")
+            if tag.lower() not in self.SOURCEMOD_COLOR_TAGS and not tag.startswith("#")
         }
 
     def _extract_printf_specifiers(self, value: str) -> list[str]:
@@ -391,8 +394,16 @@ class Translations(State):
 
         for lang, entry in block.languages.items():
             for tag in self._tags(block, lang, entry):
-                if (
-                    tag.lower() not in self.COLOR_TAGS
+                if tag != tag.lower() and tag.lower() in self.SOURCEMOD_COLOR_TAGS:
+                    self._add_issue(
+                        entry.file,
+                        entry.line,
+                        "color-tag-case",
+                        f"Color tag {{{tag}}} should be lowercase, cs2kz prints it as text",
+                        self._context(entry),
+                    )
+                elif (
+                    tag.lower() not in self.SOURCEMOD_COLOR_TAGS
                     and tag not in valid_placeholders
                     and not re.match(r"^\d+$", tag)
                     and not tag.startswith("#")
