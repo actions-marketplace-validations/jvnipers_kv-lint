@@ -13,6 +13,8 @@ from ..linter import Document, Linter
 from .base import RuleSet, State
 
 TAG = re.compile(r"\{([^{}]*)\}")
+# cs2kz prints "{{" as a literal "{", so "{{KZ}" shows "{KZ}"
+ESCAPED_BRACE = re.compile(r"\{\{[^{}]*\}?")
 
 
 @dataclass
@@ -123,27 +125,8 @@ class Translations(State):
         "vietnamese": "vi",
     }
 
-    KNOWN_COLOR_TAGS = {
-        "default",
-        "red",
-        "lightred",
-        "darkred",
-        "bluegrey",
-        "blue",
-        "darkblue",
-        "purple",
-        "orchid",
-        "yellow",
-        "gold",
-        "lightgreen",
-        "green",
-        "lime",
-        "grey",
-        "grey2",
-    }
-
-    # mm-utils chat_colors.cpp, replaced case-sensitively
-    MM_UTILS_COLOR_TAGS = {
+    # Shared by cs2kz utils_print.cpp and mm-utils chat_colors.cpp
+    COLOR_TAGS = {
         "default",
         "darkred",
         "purple",
@@ -238,8 +221,8 @@ class Translations(State):
     def _extract_placeholders(self, value: str) -> set[str]:
         return {
             tag
-            for tag in TAG.findall(value)
-            if tag.lower() not in self.KNOWN_COLOR_TAGS and not tag.startswith("#")
+            for tag in TAG.findall(ESCAPED_BRACE.sub("", value))
+            if tag.lower() not in self.COLOR_TAGS and not tag.startswith("#")
         }
 
     def _extract_printf_specifiers(self, value: str) -> list[str]:
@@ -384,7 +367,10 @@ class Translations(State):
         return placeholders
 
     def _tags(self, block: PhraseBlock, lang: str, entry: Entry) -> list[str]:
-        stray = TAG.sub("", entry.value)
+        value = entry.value
+        if block.style == "sourcemod":
+            value = ESCAPED_BRACE.sub("", value)
+        stray = TAG.sub("", value)
         for brace in "{}":
             if brace in stray:
                 self._add_issue(
@@ -394,7 +380,7 @@ class Translations(State):
                     f"Unmatched '{brace}' in '{lang}' translation for '{block.name}'",
                     self._context(entry),
                 )
-        return TAG.findall(entry.value)
+        return TAG.findall(value)
 
     def _check_phrase_format_tags(self, block: PhraseBlock) -> None:
         valid_placeholders = set(block.placeholders)
@@ -406,7 +392,7 @@ class Translations(State):
         for lang, entry in block.languages.items():
             for tag in self._tags(block, lang, entry):
                 if (
-                    tag.lower() not in self.KNOWN_COLOR_TAGS
+                    tag.lower() not in self.COLOR_TAGS
                     and tag not in valid_placeholders
                     and not re.match(r"^\d+$", tag)
                     and not tag.startswith("#")
@@ -422,7 +408,7 @@ class Translations(State):
     def _check_mm_utils_phrase(self, block: PhraseBlock) -> None:
         name_args = format_args(block.name)
         # Non-color tags in the name are filled by the plugin itself (e.g. cs2menus FillTemplate)
-        placeholders = set(TAG.findall(block.name)) - self.MM_UTILS_COLOR_TAGS
+        placeholders = set(TAG.findall(block.name)) - self.COLOR_TAGS
         for lang, entry in block.languages.items():
             tags = self._tags(block, lang, entry)
             missing = placeholders - set(tags)
@@ -434,7 +420,7 @@ class Translations(State):
                     f"Missing placeholder(s) {{{', '.join(sorted(missing))}}} in '{lang}' translation for '{block.name}' (present in the phrase name)",
                 )
             for tag in tags:
-                if tag not in self.MM_UTILS_COLOR_TAGS and tag not in placeholders:
+                if tag not in self.COLOR_TAGS and tag not in placeholders:
                     self._add_issue(
                         entry.file,
                         entry.line,
