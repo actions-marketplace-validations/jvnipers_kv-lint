@@ -777,3 +777,31 @@ def test_files_claimed_by_an_earlier_entry(tmp_path, capsys):
     write(tmp_path, {"cfg/a.cfg": '"Root"\n{\n\t"k"\t"v"\n}\n'})
     assert run(tmp_path, FileSet(["cfg/*.cfg"]), FileSet(["cfg/a.cfg"])) == []
     assert "already checked by an earlier entry" in capsys.readouterr().out
+
+
+VOTES = """\
+"Phrases"
+{
+	"Votes"
+	{
+		"#format"	"{1:d},{2:d}"
+		"en"	"{1} of {2}"
+		"de"	"{1} von {2}"
+	}
+}
+"""
+
+
+def test_repeated_placeholder(tmp_path):
+    issues = phrases(tmp_path, VOTES.replace("von {2}", "von {2}, {1}"))
+    assert summary(issues) == [
+        ("translations/plugin.phrases.txt", 7, "warning", "repeated-placeholder")
+    ]
+
+
+def test_format_after_translation(tmp_path):
+    fmt, en = '"#format"\t"{1:d},{2:d}"', '"en"\t"{1} of {2}"'
+    text = VOTES.replace(f"{fmt}\n\t\t{en}", f"{en}\n\t\t{fmt}")
+    assert summary(phrases(tmp_path, text)) == [
+        ("translations/plugin.phrases.txt", 6, "warning", "format-order")
+    ]

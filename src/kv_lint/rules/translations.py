@@ -314,7 +314,17 @@ class Translations(State):
                 )
 
                 first_keys: dict[str, str] = {}
+                translated = False
                 for child in node.children:
+                    if child.key == "#format" and translated and style == "sourcemod":
+                        self._add_issue(
+                            doc.name,
+                            child.line,
+                            "format-order",
+                            f"#format comes after a translation in phrase '{node.key}', SourceMod ignores it",
+                            doc.context(child.line),
+                        )
+                    translated |= child.value is not None and child.key != "#format"
                     if child.value is None:
                         self._add_issue(
                             doc.name,
@@ -426,7 +436,18 @@ class Translations(State):
             )
 
         for lang, entry in block.languages.items():
-            for tag in self._tags(block, lang, entry):
+            tags = self._tags(block, lang, entry)
+            if block.format_spec is not None:
+                numbers = [t for t in tags if t.isdigit()]
+                for tag in sorted({t for t in numbers if numbers.count(t) > 1}):
+                    self._add_issue(
+                        entry.file,
+                        entry.line,
+                        "repeated-placeholder",
+                        f"{{{tag}}} repeats in '{lang}' translation for '{block.name}', SourceMod prints the repeat as text",
+                        self._context(entry),
+                    )
+            for tag in tags:
                 if tag != tag.lower() and tag.lower() in self.SOURCEMOD_COLOR_TAGS:
                     self._add_issue(
                         entry.file,
