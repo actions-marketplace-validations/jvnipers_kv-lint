@@ -149,7 +149,8 @@ class Linter:
             self.add_issue(name, 0, "unreadable-file", f"Could not read file: {e}")
             return None
 
-        lines = text.splitlines()
+        # Only "\n", as the parser counts lines: splitlines() also breaks on U+2028 and the like
+        lines = text.removesuffix("\n").split("\n")
         tracker = IgnoreTracker(lines)
         # Reported before the tracker is registered, which would hide its own comment lines
         for line_num, check in tracker.unknown_ids:

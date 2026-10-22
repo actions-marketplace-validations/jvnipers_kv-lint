@@ -85,7 +85,10 @@ def load_config(path: Path) -> Config:
         checks=check_severities(checks, f"[checks] in {path.name}"),
     )
 
-    for index, entry in enumerate(data.get("files", []), 1):
+    files = data.get("files", [])
+    if not isinstance(files, list) or not all(isinstance(e, dict) for e in files):
+        raise ConfigError(f"'files' in {path.name} must be [[files]] tables")
+    for index, entry in enumerate(files, 1):
         where = f"[[files]] entry {index}"
         rules = _optional_str(entry, "rules", where)
         if rules is not None and rules not in RULE_SETS:

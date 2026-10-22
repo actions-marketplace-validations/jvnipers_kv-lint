@@ -145,6 +145,12 @@ def test_generic_whitespace_and_lint_ignore(tmp_path):
     ]
 
 
+def test_unicode_line_separator_keeps_line_numbers(tmp_path):
+    write(tmp_path, {"a.txt": '"Root"\n{\n\t"a"\t"x y"\n\t"b"\t"2" \n}\n'})
+    issues = run(tmp_path, FileSet(["*.txt"]))
+    assert [(i.line, i.check) for i in issues] == [(4, "trailing-whitespace")]
+
+
 def test_file_matched_twice_uses_first_entry(tmp_path):
     write(
         tmp_path,
@@ -164,6 +170,11 @@ def test_file_matched_twice_uses_first_entry(tmp_path):
 def test_clean_phrases(tmp_path):
     assert phrases(tmp_path, CLEAN) == []
 
+
+
+def test_olive_is_a_color_not_a_placeholder(tmp_path):
+    text = CLEAN.replace("{green}Hello", "{olive}Hello")
+    assert phrases(tmp_path, text) == []
 
 def test_missing_placeholder(tmp_path):
     issues = phrases(tmp_path, CLEAN.replace("Hallo {name}", "Hallo"))
@@ -321,6 +332,8 @@ def test_load_config(tmp_path):
         ('[[files]]\nglob = "a"\nrules = "nope"\n', "unknown rules 'nope'"),
         ('[[files]]\nrules = "phrases"\n', "needs 'glob'"),
         ('languages = "x"\n', "no [[files]] entries"),
+        ('[files]\nglob = "a"\n', "must be [[files]] tables"),
+        ('files = "a"\n', "must be [[files]] tables"),
     ],
 )
 def test_config_errors(tmp_path, text, message):
