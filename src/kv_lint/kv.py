@@ -92,7 +92,7 @@ def parse(text: str, escapes: bool = False) -> tuple[list[Node], list[tuple[int,
     # Escapes are off by default: config values can be paths ending in a backslash
     errors: list[tuple[int, str]] = []
     tokens = _tokenize(text, escapes, errors)
-    last_line = text.count("\n") + 1
+    last_line = text.removesuffix("\n").count("\n") + 1
 
     root: list[Node] = []
     siblings = root

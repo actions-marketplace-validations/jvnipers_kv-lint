@@ -274,3 +274,34 @@ def test_ida_rules(tmp_path):
 def test_missing_platform_is_info(tmp_path):
     text = IDA_VALID.replace('\t\t\t\t"linux"\t\t"164"\n', "")
     assert found(gamedata(tmp_path, text, "ida")) == [(18, "info", "missing-platform")]
+
+
+def test_ida_sections_ignore_case(tmp_path):
+    text = IDA_VALID.replace('"Patches"', '"patches"').replace(
+        '"windows"\t"90 90 EB"', '"windows"\t"90 ?? EB"'
+    )
+    assert found(gamedata(tmp_path, text, "ida")) == [
+        (24, "warning", "gamedata-key-case"),
+        (28, "error", "invalid-signature"),
+    ]
+
+
+def test_references_resolve_within_files_sourcemod_merges(tmp_path):
+    sigs = '"Games"\n{\n\t"#default"\n\t{\n\t\t"Signatures"\n\t\t{\n\t\t\t"Spawn"\n\t\t\t{\n\t\t\t\t"windows"\t"@spawn"\n\t\t\t\t"linux"\t"@spawn"\n\t\t\t}\n\t\t}\n\t}\n}\n'
+    funcs = '"Games"\n{\n\t"#default"\n\t{\n\t\t"Functions"\n\t\t{\n\t\t\t"Spawn"\n\t\t\t{\n\t\t\t\t"signature"\t"Spawn"\n\t\t\t}\n\t\t}\n\t}\n}\n'
+    write(
+        tmp_path,
+        {
+            # custom/a.txt overrides a.txt, b.txt is another plugin
+            "gamedata/a.txt": sigs,
+            "gamedata/b.txt": funcs,
+            "gamedata/custom/a.txt": funcs,
+            "gamedata/x.games/master.games.txt": '"Game Master"\n{\n\t"s.txt"\n\t{\n\t}\n\t"f.txt"\n\t{\n\t}\n}\n',
+            "gamedata/x.games/s.txt": sigs,
+            "gamedata/x.games/f.txt": funcs,
+        },
+    )
+    issues = run(tmp_path, FileSet(["gamedata/**/*.txt"], "gamedata"))
+    assert [(i.file, i.check) for i in issues] == [
+        ("gamedata/b.txt", "unknown-reference")
+    ]

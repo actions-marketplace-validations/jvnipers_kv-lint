@@ -25,6 +25,14 @@ class Issue:
         return msg
 
 
+def relative_name(path: Path, start: Optional[Path] = None) -> str:
+    try:
+        return Path(os.path.relpath(path, start)).as_posix()
+    except ValueError:
+        # Windows: path on another drive
+        return path.as_posix()
+
+
 # "// lint-ignore[-start|-end|-next] [check ids] [-- reason]"
 IGNORE_COMMENT = re.compile(r"//\s*lint-ignore(-start|-end|-next)?(?![\w-])(.*)")
 
@@ -109,7 +117,7 @@ class Linter:
         self.file_defaults: dict[str, dict[str, str]] = {}
 
     def display_name(self, path: Path) -> str:
-        return Path(os.path.relpath(path, self.root)).as_posix()
+        return relative_name(path, self.root)
 
     def severity(self, filename: str, check: str) -> str:
         if check in self.overrides:
@@ -149,7 +157,7 @@ class Linter:
             self.add_issue(name, 0, "unreadable-file", f"Could not read file: {e}")
             return None
 
-        # Only "\n", as the parser counts lines: splitlines() also breaks on U+2028 and the like
+        # Not splitlines(): it also breaks on U+2028 etc., the parser doesn't
         lines = text.removesuffix("\n").split("\n")
         tracker = IgnoreTracker(lines)
         # Reported before the tracker is registered, which would hide its own comment lines

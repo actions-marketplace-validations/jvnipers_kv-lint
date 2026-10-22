@@ -1,11 +1,14 @@
+import os
 import re
 import textwrap
+from pathlib import Path
 
 import pytest
 
 from kv_lint import kv
 from kv_lint.cli import github_annotation, lint, main
 from kv_lint.config import Config, ConfigError, FileSet, load_config
+from kv_lint.linter import relative_name
 from kv_lint.rules.translations import format_args
 
 LANGUAGES = """\
@@ -169,8 +172,6 @@ def test_file_matched_twice_uses_first_entry(tmp_path):
 
 def test_clean_phrases(tmp_path):
     assert phrases(tmp_path, CLEAN) == []
-
-
 
     text = CLEAN.replace("{green}Hello", "{olive}Hello")
     assert phrases(tmp_path, text) == []
@@ -637,3 +638,111 @@ def test_cli_phrases_style_needs_phrases(tmp_path, monkeypatch):
     with pytest.raises(SystemExit) as exc:
         main(["--phrases-style", "mm-utils", "cfg/*.cfg"])
     assert exc.value.code == 2
+
+
+def test_mm_utils_language_keys_ignore_case_and_last_repeat_wins(tmp_path):
+    issues = mm_phrases(
+        tmp_path,
+        """\
+    "Phrases"
+    {
+    	"%s left"
+    	{
+    		"en"	"%s left"
+    		"EN"	"%d left"
+    		"DE"	"%s ging"
+    	}
+    }
+    """,
+    )
+    assert [(i.line, i.check) for i in issues] == [
+        (6, "duplicate-key"),
+        (6, "format-mismatch"),
+    ]
+
+
+def test_mm_utils_phrases_share_one_table_and_skip_language_folders(tmp_path):
+    yes = '"Phrases"\n{\n\t"Yes"\n\t{\n\t\t"en"\t"Yes"\n\t}\n}\n'
+    write(
+        tmp_path,
+        {
+            "translations/config.txt": LANGUAGES,
+            "translations/a.phrases.txt": yes,
+            "translations/b.phrases.txt": yes.replace(
+                '"Yes"\n\t}', '"Yes"\n\t\t"de"\t"Ja"\n\t}'
+            ),
+            "translations/de/a.phrases.txt": yes,
+                
+            
+        },
+    )
+    issues = run(
+        tmp_path,
+        FileSet(["translations/**/*.phrases.txt"], "phrases", {"style": "mm-utils"}),
+    )
+    assert summary(issues) == [
+        ("translations/b.phrases.txt", 5, "error", "duplicate-key"),
+        ("translations/de/a.phrases.txt", 0, "error", "phrase-structure"),
+    ]
+
+
+def test_menu_file_for_any_name_of_a_language(tmp_path):
+    languages = LANGUAGES.replace(
+        '"german"\t"de"', '"german"\t"de"\n"koreana"\t"ko"\n"korean"\t"ko"'
+    )
+    files = {"translations/config.txt": languages, "menu/english.txt": MENU}
+    files |= {"menu/german.txt": MENU, "menu/koreana.txt": MENU}
+    assert menu(tmp_path, files) == []
+
+
+def test_missing_languages_file_is_an_error(tmp_path):
+    write(tmp_path, {"translations/p.phrases.txt": CLEAN})
+    issues = run(
+        tmp_path,
+        FileSet(["translations/*.phrases.txt"], "phrases"),
+        languages="translations/nope.txt",
+    )
+    assert summary(issues) == [("translations/nope.txt", 0, "error", "unreadable-file")]
+
+
+def test_glob_matching_nothing_is_an_error(tmp_path):
+    write(tmp_path, {"cfg/a.cfg": '"Root"\n{\n\t"k"\t"v"\n}\n'})
+    issues = run(tmp_path, FileSet(["cfg/*.cfg", "cfg/*.txt"]))
+    assert summary(issues) == [("cfg/*.txt", 0, "error", "no-matching-files")]
+
+
+def test_cli_output_removed_on_clean_run(tmp_path, monkeypatch):
+    write(tmp_path, {"cfg/a.cfg": '"Root"\n{\n\t"k"\t"v"\n}\n', "out.txt": "old"})
+    monkeypatch.chdir(tmp_path)
+    assert main(["cfg/a.cfg", "--output", "out.txt"]) == 0
+    assert not (tmp_path / "out.txt").exists()
+
+
+    write(
+        tmp_path,
+        {"translations/config.txt": LANGUAGES, "translations/p.phrases.txt": CLEAN},
+    )
+    monkeypatch.chdir(tmp_path)
+    args = [
+        "--phrases",
+        "translations/*.phrases.txt",
+        "--languages",
+        "translations/config.txt",
+        "--report",
+        "missing/dir/r.txt",
+    ]
+    assert main(args) == 2
+
+
+def test_relative_name_falls_back_across_drives(monkeypatch):
+    def relpath(path, start=None):
+        raise ValueError("path is on mount 'D:', start on mount 'C:'")
+
+    monkeypatch.setattr(os.path, "relpath", relpath)
+    assert relative_name(Path("/x/a.txt")) == "/x/a.txt"
+
+
+def test_unclosed_section_ends_on_last_line():
+    nodes, _ = kv.parse('"Root"\n{\n\t"a"\t"1"\n')
+    assert nodes[0].end_line == 3
+

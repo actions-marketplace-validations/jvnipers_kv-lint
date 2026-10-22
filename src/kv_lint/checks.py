@@ -4,6 +4,7 @@ SEVERITIES = ("error", "warning", "info", "off")
 CHECKS = {
     "encoding": "error",
     "unreadable-file": "error",
+    "no-matching-files": "error",
     "syntax": "error",
     "trailing-whitespace": "warning",
     "consecutive-blank-lines": "warning",

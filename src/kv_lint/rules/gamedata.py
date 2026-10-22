@@ -25,19 +25,27 @@ SIGNATURE_KEYS = {"sourcemod": {"library"}, "ida": {"library", "allow_multi_matc
 OFFSET_KEYS = {"sourcemod": {"class", "prop"}, "ida": set()}
 # Pairs in DHooks "Functions" entries naming other gamedata entries
 REFERENCES = {"signature": "Signatures", "offset": "Offsets", "address": "Addresses"}
+SECTIONS = ("Signatures", "Offsets", "Addresses", "Patches", "Functions", "Keys")
+
+
+def _scope(path: Path) -> Path:
+    # SourceMod merges a master.games.txt folder (approximated as all of it), else x.txt with custom/x.txt
+    folder = path.parent.parent if path.parent.name == "custom" else path.parent
+    if (folder / "master.games.txt").is_file():
+        return folder
+    return folder / path.name
 
 
 class Gamedata(State):
     def __init__(self, linter, config) -> None:
         super().__init__(linter, config)
         self._add_issue = linter.add_issue
-        # SourceMod resolves names across a *.games/ folder, so names are collected per folder
         self.names: dict[Path, dict[str, set[str]]] = {}
         self.references: list[tuple[Path, str, str, str, int, str]] = []
 
     def lint(self, doc: Document, style: str) -> None:
         names = self.names.setdefault(
-            doc.path.parent, {section: set() for section in REFERENCES.values()}
+            _scope(doc.path), {section: set() for section in REFERENCES.values()}
         )
         # SourceMod streams the file, so repeated game and section blocks merge.
         # KeyValues FindKey (ida style) only reads the first. A repeated entry is lost either way.
@@ -64,7 +72,7 @@ class Gamedata(State):
                     self._once(
                         doc,
                         blocks,
-                        (game.key,),
+                        (game.key.lower(),),
                         game,
                         f"Game section '{game.key}' repeats, only the first is read",
                     )
@@ -86,41 +94,47 @@ class Gamedata(State):
                             f"Expected a section in '{game.key}', found key-value pair '{section.key}'",
                         )
                         continue
+                    name = section.key
                     if style == "ida":
+                        # KeyValues FindKey ignores case
+                        name = next(
+                            (s for s in SECTIONS if s.lower() == name.lower()), name
+                        )
+                        if name != section.key:
+                            self._add_issue(
+                                doc.name,
+                                section.line,
+                                "gamedata-key-case",
+                                f"Section '{section.key}' in '{game.key}' should be '{name}'",
+                                doc.context(section.line),
+                            )
                         self._once(
                             doc,
                             blocks,
-                            (game.key, section.key),
+                            (game.key.lower(), name.lower()),
                             section,
                             f"Section '{section.key}' repeats in '{game.key}', only the first is read",
                         )
-                    if section.key not in (
-                        "Signatures",
-                        "Offsets",
-                        "Addresses",
-                        "Patches",
-                        "Functions",
-                        "Keys",
-                    ):
+                    if name not in SECTIONS:
                         continue
                     for entry in section.children:
                         self._once(
                             doc,
                             entries,
-                            (scope, section.key, entry.key),
+                            (scope, name, entry.key),
                             entry,
-                            f"'{entry.key}' is defined twice in '{game.key}' {section.key}",
+                            f"'{entry.key}' is defined twice in '{game.key}' {name}",
                         )
-                        if section.key == "Keys":
+                        if name == "Keys":
                             continue
                         if entry.children is None:
                             self._structure(
                                 doc,
                                 entry,
-                                f"Expected a '{section.key}' entry section, found key-value pair '{entry.key}'",
+                                f"Expected a '{name}' entry section, found key-value pair '{entry.key}'",
                             )
                         else:
-                            self._entry(doc, style, section.key, entry, names)
+                            self._entry(doc, style, name, entry, names)
 
     def finish(self) -> None:
         for folder, section, name, file, line, entry in self.references:
@@ -386,7 +400,7 @@ class Gamedata(State):
                     has_signature = True
                     self.references.append(
                         (
-                            doc.path.parent,
+                            _scope(doc.path),
                             "Signatures",
                             child.value,
                             doc.name,
@@ -444,7 +458,7 @@ class Gamedata(State):
                 section = REFERENCES[child.key]
                 self.references.append(
                     (
-                        doc.path.parent,
+                        _scope(doc.path),
                         section,
                         child.value,
                         doc.name,
