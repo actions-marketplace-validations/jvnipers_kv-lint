@@ -67,7 +67,9 @@ def load_config(path: Path) -> Config:
     try:
         with open(path, "rb") as f:
             data = tomllib.load(f)
-    except tomllib.TOMLDecodeError as e:
+    except FileNotFoundError:
+        raise
+    except (tomllib.TOMLDecodeError, OSError, UnicodeDecodeError) as e:
         raise ConfigError(f"{path}: {e}") from e
 
     _check_keys(

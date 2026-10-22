@@ -72,7 +72,8 @@ def lint(config: Config) -> tuple[Linter, list[State]]:
 
         label = ", ".join(fileset.globs)
         if not paths:
-            print(f"No files match {label}")
+            if matches:
+                print(f"Files matching {label} are already checked by an earlier entry")
             continue
         shown = f" ({', '.join(options.values())})" if options else ""
         rules = f" with {rule_set.name}{shown} rules" if fileset.rules else ""

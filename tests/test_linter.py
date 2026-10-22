@@ -746,3 +746,34 @@ def test_unclosed_section_ends_on_last_line():
     nodes, _ = kv.parse('"Root"\n{\n\t"a"\t"1"\n')
     assert nodes[0].end_line == 3
 
+
+
+def test_unknown_language_is_not_a_report_language(tmp_path):
+    write(
+        tmp_path,
+        {
+            "translations/config.txt": LANGUAGES,
+            "translations/p.phrases.txt": CLEAN.replace('"de"', '"xx"\t"x"\n"de"'),
+        },
+    )
+    config = Config(
+        tmp_path,
+        [FileSet(["translations/*.phrases.txt"], "phrases")],
+        "translations/config.txt",
+    )
+    _, [state] = lint(config)
+    assert state.report_data()["summary"]["all_languages"] == ["de", "en"]
+
+
+def test_unreadable_config_is_a_config_error(tmp_path):
+    (tmp_path / "bad.toml").write_bytes(b"\xff\xfe")
+    with pytest.raises(ConfigError, match="codec"):
+        load_config(tmp_path / "bad.toml")
+    with pytest.raises(ConfigError):
+        load_config(tmp_path)
+
+
+def test_files_claimed_by_an_earlier_entry(tmp_path, capsys):
+    write(tmp_path, {"cfg/a.cfg": '"Root"\n{\n\t"k"\t"v"\n}\n'})
+    assert run(tmp_path, FileSet(["cfg/*.cfg"]), FileSet(["cfg/a.cfg"])) == []
+    assert "already checked by an earlier entry" in capsys.readouterr().out

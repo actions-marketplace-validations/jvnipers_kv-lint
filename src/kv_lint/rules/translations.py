@@ -242,7 +242,10 @@ class Translations(State):
         for blocks in self.all_phrase_blocks.values():
             for block in blocks:
                 if not block.ignored:
-                    self.global_languages.update(block.languages.keys())
+                    # Unknown codes are typos, already errors, not report languages
+                    self.global_languages.update(
+                        block.languages.keys() & self.known_languages
+                    )
 
         for blocks in self.all_phrase_blocks.values():
             for block in blocks:
