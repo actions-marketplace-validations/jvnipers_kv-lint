@@ -225,10 +225,18 @@ class Translations(State):
             return f"{code} ({self._code_to_name[code]})"
         return code
 
-    def _extract_placeholders(self, value: str) -> set[str]:
+    @staticmethod
+    def _unescape(block: PhraseBlock, value: str) -> str:
+        # Placeholders are filled before "{{" is read, so "{{1}" is "{" then {1}
+        if block.placeholders:
+            names = "|".join(re.escape(p) for p in block.placeholders)
+            value = re.sub(rf"\{{(?=\{{(?:{names})\}})", "", value)
+        return ESCAPED_BRACE.sub("", value)
+
+    def _extract_placeholders(self, block: PhraseBlock, value: str) -> set[str]:
         return {
             tag
-            for tag in TAG.findall(ESCAPED_BRACE.sub("", value))
+            for tag in TAG.findall(self._unescape(block, value))
             if tag.lower() not in self.SOURCEMOD_COLOR_TAGS and not tag.startswith("#")
         }
 
@@ -256,6 +264,10 @@ class Translations(State):
                 self._check_phrase_block(block)
 
         self._check_language_consistency()
+        if "english.txt" in self.menu_files:
+            self._check_missing_menu_languages(
+                self.linter.display_name(self.menu_dir) + "/"
+            )
 
     def _base_file(self, doc: Document) -> str:
         # SourceMod: translations/de/x.phrases.txt adds "de" to translations/x.phrases.txt
@@ -349,8 +361,8 @@ class Translations(State):
                                 f"Also at line {block.languages[lang].line}",
                             )
                         block.languages[lang] = Entry(doc.name, child.line, child.value)
-                    elif child.key not in block.languages:
-                        # Duplicates are reported by the generic duplicate key check
+                    else:
+                        # SourceMod keeps the last of a repeat, which the generic check reports
                         block.languages[child.key] = Entry(
                             doc.name, child.line, child.value
                         )
@@ -387,18 +399,19 @@ class Translations(State):
             if lang not in block.languages:
                 block.languages[lang] = entry
                 continue
-            kept, dropped = (
+            first, repeat = (
                 (entry, block.languages[lang])
                 if other_is_base
                 else (block.languages[lang], entry)
             )
-            block.languages[lang] = kept
+            # SourceMod reads language folders after the base file
+            block.languages[lang] = repeat if block.style == "sourcemod" else first
             self._add_issue(
-                dropped.file,
-                dropped.line,
+                repeat.file,
+                repeat.line,
                 "duplicate-key",
                 f"Duplicate '{lang}' translation for phrase '{block.name}'",
-                f"Also at {kept.file}:{kept.line}",
+                f"Also at {first.file}:{first.line}",
             )
 
     def _parse_format_spec(self, format_value: str) -> set[str]:
@@ -415,7 +428,7 @@ class Translations(State):
     def _tags(self, block: PhraseBlock, lang: str, entry: Entry) -> list[str]:
         value = entry.value
         if block.style == "sourcemod":
-            value = ESCAPED_BRACE.sub("", value)
+            value = self._unescape(block, value)
         stray = TAG.sub("", value)
         for brace in "{}":
             if brace in stray:
@@ -432,7 +445,7 @@ class Translations(State):
         valid_placeholders = set(block.placeholders)
         if "en" in block.languages:
             valid_placeholders.update(
-                self._extract_placeholders(block.languages["en"].value)
+                self._extract_placeholders(block, block.languages["en"].value)
             )
 
         for lang, entry in block.languages.items():
@@ -533,14 +546,16 @@ class Translations(State):
 
         if "en" in block.languages and block.style == "sourcemod":
             en_value = block.languages["en"].value
-            en_placeholders = self._extract_placeholders(en_value)
+            en_placeholders = self._extract_placeholders(block, en_value)
             en_specifiers = self._extract_printf_specifiers(en_value)
 
             for lang, entry in block.languages.items():
                 if lang == "en":
                     continue
 
-                missing = en_placeholders - self._extract_placeholders(entry.value)
+                missing = en_placeholders - self._extract_placeholders(
+                    block, entry.value
+                )
                 if missing:
                     self._add_issue(
                         entry.file,
@@ -580,27 +595,36 @@ class Translations(State):
                         )
 
     def lint_radiopanel(self, docs: list[Document]) -> None:
+        english = next((d for d in docs if d.path.name == "english.txt"), None)
+        if docs and self.menu_dir is None:
+            self.menu_dir = (english or docs[0]).path.parent
+        # Reports cover one menu folder
+        for folder in sorted({d.path.parent for d in docs} - {self.menu_dir}):
+            self._add_issue(
+                self.linter.display_name(folder) + "/",
+                0,
+                "menu-structure",
+                "Menu files from a second folder aren't supported, so these are skipped",
+            )
+        docs = [d for d in docs if d.path.parent == self.menu_dir]
         if not docs:
             return
+        if english and english.path.parent != self.menu_dir:
+            english = None
         self.menu_file_count += len(docs)
-
-        english = next((d for d in docs if d.path.name == "english.txt"), None)
-        self.menu_dir = (english or docs[0]).path.parent
         menu_dir_name = self.linter.display_name(self.menu_dir) + "/"
 
-        if english is None:
-            if not (self.menu_dir / "english.txt").exists():
-                self._add_issue(
-                    menu_dir_name,
-                    0,
-                    "missing-menu-reference",
-                    "Missing english.txt - this is the reference file for menu translations",
-                )
+        if english is not None:
+            self.menu_files["english.txt"] = self._parse_menu_file(english)
+            self.menu_languages.add("english")
+        english_groups = self.menu_files.get("english.txt")
+        if english_groups is None:
+            if (self.menu_dir / "english.txt").exists():
+                message = "english.txt isn't matched by the radiopanel glob, so menus aren't compared"
+            else:
+                message = "Missing english.txt - this is the reference file for menu translations"
+            self._add_issue(menu_dir_name, 0, "missing-menu-reference", message)
             return
-
-        english_groups = self._parse_menu_file(english)
-        self.menu_files["english.txt"] = english_groups
-        self.menu_languages.add("english")
 
         for doc in docs:
             if doc is english:
@@ -610,8 +634,6 @@ class Translations(State):
             lang_groups = self._parse_menu_file(doc)
             self.menu_files[doc.path.name] = lang_groups
             self._compare_menu_to_english(doc, lang_groups, english_groups)
-
-        self._check_missing_menu_languages(menu_dir_name)
 
     def _parse_menu_file(self, doc: Document) -> list[MenuGroup]:
         # RadioPanel.txt { Groups { <group> { kv..., Commands { <command> { kv... } } } } }

@@ -80,7 +80,13 @@ def lint(config: Config) -> tuple[Linter, list[State]]:
         print(f"Checking {len(paths)} file(s) matching {label}{rules}")
 
         loaded = (
-            linter.load(p, escapes=rule_set.escapes, defaults=rule_set.checks)
+            # Valve's own files may be UTF-16, SourceMod and mm-utils only read UTF-8
+            linter.load(
+                p,
+                escapes=rule_set.escapes,
+                defaults=rule_set.checks,
+                utf16=rule_set is GENERIC,
+            )
             for p in paths
         )
         docs = [doc for doc in loaded if doc]

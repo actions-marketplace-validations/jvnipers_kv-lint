@@ -805,3 +805,57 @@ def test_format_after_translation(tmp_path):
     assert summary(phrases(tmp_path, text)) == [
         ("translations/plugin.phrases.txt", 6, "warning", "format-order")
     ]
+
+
+def test_unclosed_ignore_block(tmp_path):
+    write(tmp_path, {"a.txt": '"Root"\n{\n// lint-ignore-start\n\t"k"\t"v" \n}\n'})
+    issues = run(tmp_path, FileSet(["*.txt"]))
+    assert [(i.line, i.check) for i in issues] == [(3, "unclosed-ignore")]
+
+
+def test_radiopanel_english_not_matched_by_glob(tmp_path):
+    files = {"translations/config.txt": LANGUAGES, "menu/english.txt": MENU}
+    write(tmp_path, {**files, "menu/german.txt": MENU})
+    [issue] = run(tmp_path, FileSet(["menu/german.txt"], "radiopanel"))
+    assert (issue.file, issue.check) == ("menu/", "missing-menu-reference")
+    assert "isn't matched" in issue.message
+
+
+def test_radiopanel_second_folder_is_skipped(tmp_path):
+    files = {"translations/config.txt": LANGUAGES, "menu/english.txt": MENU}
+    write(tmp_path, {**files, "menu/german.txt": MENU, "menu2/german.txt": "x {"})
+    issues = run(tmp_path, FileSet(["menu*/*.txt"], "radiopanel"))
+    assert summary(issues) == [
+        ("menu2/", 0, "error", "menu-structure"),
+        ("menu2/german.txt", 1, "error", "syntax"),
+    ]
+
+
+def test_sourcemod_checks_the_last_repeated_language(tmp_path):
+    text = CLEAN.replace(
+        '"de"\t"{green}Hallo {name}"', '"de"\t"{green}Hallo {name}"\n\t\t"de"\t"Hallo"'
+    )
+    assert summary(phrases(tmp_path, text)) == [
+        ("translations/plugin.phrases.txt", 8, "error", "duplicate-key"),
+        ("translations/plugin.phrases.txt", 8, "error", "missing-placeholder"),
+    ]
+
+
+def test_utf16_only_for_generic_files(tmp_path):
+    text = '﻿"Phrases"\r\n{\r\n\t"Yes"\r\n\t{\r\n\t\t"en"\t"Yes"\r\n\t}\r\n}\r\n'
+    for name in ("cfg/a.txt", "translations/p.phrases.txt"):
+        (tmp_path / name).parent.mkdir(parents=True, exist_ok=True)
+        (tmp_path / name).write_bytes(text.encode("utf-16-le"))
+    write(tmp_path, {"translations/config.txt": LANGUAGES})
+    issues = run(
+        tmp_path,
+        FileSet(["translations/*.phrases.txt"], "phrases"),
+        FileSet(["cfg/*.txt"]),
+    )
+    assert summary(issues) == [
+        ("translations/p.phrases.txt", 0, "error", "encoding")
+    ]
+
+
+def test_double_brace_before_a_placeholder(tmp_path):
+    assert phrases(tmp_path, VOTES.replace("{1} von", "{{1} von")) == []

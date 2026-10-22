@@ -43,6 +43,8 @@ class IgnoreTracker:
         # Line -> ignored check ids, None meaning every check
         self.ignored: dict[int, Optional[set[str]]] = {}
         self.unknown_ids: list[tuple[int, str]] = []
+        # Line of a lint-ignore-start that no -end closes
+        self.unclosed: Optional[int] = None
         # False when inactive, otherwise ids as above
         block: Union[bool, None, set[str]] = False
         pending: Union[bool, None, set[str]] = False
@@ -54,8 +56,10 @@ class IgnoreTracker:
                 self._add(line_num, None)
                 if match.group(1) == "-start":
                     block = ids
+                    self.unclosed = line_num
                 elif match.group(1) == "-end":
                     block = False
+                    self.unclosed = None
                 else:
                     pending = ids
                 continue
@@ -145,11 +149,22 @@ class Linter:
         path: Path,
         escapes: bool = False,
         defaults: Optional[dict[str, str]] = None,
+        utf16: bool = False,
     ) -> Optional[Document]:
         name = self.display_name(path)
         self.file_defaults[name] = defaults or {}
         try:
-            text = path.read_text(encoding="utf-8-sig")
+            data = path.read_bytes()
+            if data[:2] in (b"\xff\xfe", b"\xfe\xff"):
+                if not utf16:
+                    self.add_issue(
+                        name, 0, "encoding", "File is UTF-16, expected UTF-8"
+                    )
+                    return None
+                text = data.decode("utf-16")
+            else:
+                text = data.decode("utf-8-sig")
+            text = text.replace("\r\n", "\n").replace("\r", "\n")
         except UnicodeDecodeError:
             self.add_issue(name, 0, "encoding", "File is not valid UTF-8")
             return None
@@ -167,6 +182,13 @@ class Linter:
                 line_num,
                 "unknown-ignore",
                 f"Unknown check '{check}' in lint-ignore comment",
+            )
+        if tracker.unclosed:
+            self.add_issue(
+                name,
+                tracker.unclosed,
+                "unclosed-ignore",
+                "lint-ignore-start has no lint-ignore-end, so the rest of the file is ignored",
             )
         self.ignore_trackers[name] = tracker
         nodes, errors = kv.parse(text, escapes)

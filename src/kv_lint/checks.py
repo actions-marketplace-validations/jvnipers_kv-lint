@@ -10,6 +10,7 @@ CHECKS = {
     "consecutive-blank-lines": "warning",
     "duplicate-key": "warning",
     "unknown-ignore": "warning",
+    "unclosed-ignore": "warning",
     "phrase-structure": "error",
     "missing-english": "error",
     "unknown-language": "error",
