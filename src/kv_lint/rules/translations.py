@@ -264,10 +264,8 @@ class Translations(State):
                 self._check_phrase_block(block)
 
         self._check_language_consistency()
-        if "english.txt" in self.menu_files:
-            self._check_missing_menu_languages(
-                self.linter.display_name(self.menu_dir) + "/"
-            )
+        if "english.txt" in self.menu_files and self.menu_dir is not None:
+            self._check_missing_menu_languages(self.menu_dir)
 
     def _base_file(self, doc: Document) -> str:
         # SourceMod: translations/de/x.phrases.txt adds "de" to translations/x.phrases.txt
@@ -607,7 +605,7 @@ class Translations(State):
                 "Menu files from a second folder aren't supported, so these are skipped",
             )
         docs = [d for d in docs if d.path.parent == self.menu_dir]
-        if not docs:
+        if not docs or self.menu_dir is None:
             return
         if english and english.path.parent != self.menu_dir:
             english = None
@@ -836,26 +834,26 @@ class Translations(State):
                 return name
         return names[0] if names else None
 
-    def _check_missing_menu_languages(self, menu_dir_name: str) -> None:
+    def _check_missing_menu_languages(self, menu_dir: Path) -> None:
         missing_menus = []
 
         for lang_code in self.known_languages:
             lang_name = self._menu_name(lang_code)
             if lang_name and lang_name not in self.menu_languages:
-                menu_file = self.menu_dir / f"{lang_name}.txt"
+                menu_file = menu_dir / f"{lang_name}.txt"
                 if not menu_file.exists():
                     missing_menus.append((lang_name, lang_code))
 
         for lang_name, lang_code in sorted(missing_menus, key=lambda x: x[0]):
             self._add_issue(
-                menu_dir_name,
+                self.linter.display_name(menu_dir) + "/",
                 0,
                 "missing-menu-file",
                 f"Missing menu translation file: {lang_name}.txt (for language code '{lang_code}')",
             )
 
     def _collect_missing_menu_data(self) -> dict:
-        if "english.txt" not in self.menu_files:
+        if "english.txt" not in self.menu_files or self.menu_dir is None:
             return {}
 
         english_groups = self.menu_files["english.txt"]
@@ -1140,8 +1138,9 @@ class PhrasesRules(RuleSet):
     options = {"style": ("sourcemod", "mm-utils")}
 
     def lint(
-        self, state: Translations, docs: list[Document], options: dict[str, str]
+        self, state: Optional[State], docs: list[Document], options: dict[str, str]
     ) -> None:
+        assert isinstance(state, Translations)
         for doc in docs:
             state.lint_phrases(doc, options["style"])
 
@@ -1151,6 +1150,7 @@ class RadioPanelRules(RuleSet):
     state = Translations
 
     def lint(
-        self, state: Translations, docs: list[Document], options: dict[str, str]
+        self, state: Optional[State], docs: list[Document], options: dict[str, str]
     ) -> None:
+        assert isinstance(state, Translations)
         state.lint_radiopanel(docs)

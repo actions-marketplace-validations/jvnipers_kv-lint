@@ -41,7 +41,7 @@ def github_annotation(issue: Issue, path: Optional[Path]) -> str:
 
 def lint(config: Config) -> tuple[Linter, list[State]]:
     linter = Linter(config.root, config.checks)
-    states: dict[type, State] = {}
+    states: dict[Optional[type[State]], State] = {}
     for fileset in config.files:
         state_type = RULE_SETS[fileset.rules].state if fileset.rules else None
         if state_type and state_type not in states:

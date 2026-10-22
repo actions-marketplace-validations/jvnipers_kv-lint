@@ -9,7 +9,7 @@ from kv_lint import kv
 from kv_lint.cli import github_annotation, lint, main
 from kv_lint.config import Config, ConfigError, FileSet, load_config
 from kv_lint.linter import relative_name
-from kv_lint.rules.translations import format_args
+from kv_lint.rules.translations import Translations, format_args
 
 LANGUAGES = """\
 "Languages"
@@ -83,8 +83,10 @@ def test_parse_tree_with_braces_on_key_line_unquoted_and_conditionals():
     assert errors == []
     [root] = nodes
     assert (root.key, root.line, root.end_line) == ("Root", 1, 4)
+    assert root.children is not None
     key, sub = root.children
     assert (key.key, key.value, key.condition) == ("key", "value", "[$WIN64]")
+    assert sub.children is not None
     assert (sub.key, sub.children[0].value) == ("sub", "1")
 
 
@@ -98,7 +100,7 @@ def test_parse_block_comment_keeps_line_numbers():
 )
 def test_parse_escapes(escapes, value):
     nodes, errors = kv.parse(f'"Root"\n{{\n\t"k"\t"{value}"\n}}\n', escapes=escapes)
-    assert errors == [] and nodes[0].children[0].value == value
+    assert errors == [] and nodes[0].children and nodes[0].children[0].value == value
 
 
 @pytest.mark.parametrize(
@@ -762,6 +764,7 @@ def test_unknown_language_is_not_a_report_language(tmp_path):
         "translations/config.txt",
     )
     _, [state] = lint(config)
+    assert isinstance(state, Translations)
     assert state.report_data()["summary"]["all_languages"] == ["de", "en"]
 
 

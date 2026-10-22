@@ -162,7 +162,7 @@ class Gamedata(State):
 
     def _master(self, doc: Document, root: kv.Node) -> None:
         # master.games.txt lists the folder's gamedata files, each with optional conditions
-        for entry in root.children:
+        for entry in root.children or []:
             if not (doc.path.parent / entry.key).is_file():
                 self._add_issue(
                     doc.name,
@@ -245,7 +245,7 @@ class Gamedata(State):
         child: kv.Node,
         wildcards: bool,
     ) -> None:
-        value = child.value
+        value = child.value or ""
         where = f"{kind} '{entry.key}' ({child.key})"
         if value.startswith("@") and wildcards:
             if len(value) == 1 or any(c.isspace() for c in value):
@@ -310,7 +310,7 @@ class Gamedata(State):
     def _number(
         self, doc: Document, style: str, kind: str, entry: kv.Node, child: kv.Node
     ) -> None:
-        value = child.value.strip()
+        value = (child.value or "").strip()
         if not NUMBER.fullmatch(value):
             self._add_issue(
                 doc.name,
@@ -321,7 +321,7 @@ class Gamedata(State):
             )
         elif style == "sourcemod" and re.fullmatch(r"-?0\d+", value):
             # strtol stops at the first non-octal digit: "0108" is 010
-            octal = re.match(r"-?0[0-7]*", value).group()
+            octal = re.split("[89]", value)[0]
             self._add_issue(
                 doc.name,
                 child.line,
@@ -333,7 +333,7 @@ class Gamedata(State):
     def _signature(self, doc: Document, style: str, entry: kv.Node) -> None:
         platforms, has_library = set(), False
         seen: dict[tuple, int] = {}
-        for child in entry.children:
+        for child in entry.children or []:
             self._once(
                 doc,
                 seen,
@@ -364,7 +364,7 @@ class Gamedata(State):
     def _offset(self, doc: Document, style: str, entry: kv.Node) -> None:
         platforms, netprop = set(), False
         seen: dict[tuple, int] = {}
-        for child in entry.children:
+        for child in entry.children or []:
             self._once(
                 doc,
                 seen,
@@ -389,10 +389,12 @@ class Gamedata(State):
     def _address(self, doc: Document, entry: kv.Node) -> None:
         has_signature = False
         # A platform subsection holds read/offset entries for that platform only
-        for scope in [entry] + [c for c in entry.children if c.children is not None]:
+        for scope in [entry] + [
+            c for c in entry.children or [] if c.children is not None
+        ]:
             last_offset = None
-            for child in scope.children:
-                if child.children is not None:
+            for child in scope.children or []:
+                if child.value is None:
                     if scope is entry:
                         self._platform(doc, "sourcemod", "address", entry, child)
                     continue
@@ -435,7 +437,7 @@ class Gamedata(State):
 
     def _patch(self, doc: Document, entry: kv.Node) -> None:
         seen: dict[tuple, int] = {}
-        for child in entry.children:
+        for child in entry.children or []:
             self._once(
                 doc,
                 seen,
@@ -478,7 +480,8 @@ class GamedataRules(RuleSet):
     options = {"style": ("sourcemod", "ida")}
 
     def lint(
-        self, state: Gamedata, docs: list[Document], options: dict[str, str]
+        self, state: Optional[State], docs: list[Document], options: dict[str, str]
     ) -> None:
+        assert isinstance(state, Gamedata)
         for doc in docs:
             state.lint(doc, options["style"])

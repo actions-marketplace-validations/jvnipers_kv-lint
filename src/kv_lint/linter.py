@@ -82,8 +82,8 @@ class IgnoreTracker:
     def _add(self, line_num: int, ids: Optional[set[str]]) -> None:
         if ids is None:
             self.ignored[line_num] = None
-        elif self.ignored.get(line_num, set()) is not None:
-            self.ignored.setdefault(line_num, set()).update(ids)
+        elif (current := self.ignored.setdefault(line_num, set())) is not None:
+            current.update(ids)
 
     def is_ignored(self, line_num: int, check: str) -> bool:
         if line_num not in self.ignored:

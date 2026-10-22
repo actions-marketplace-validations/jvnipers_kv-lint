@@ -96,16 +96,18 @@ def parse(text: str, escapes: bool = False) -> tuple[list[Node], list[tuple[int,
 
     root: list[Node] = []
     siblings = root
-    stack: list[tuple[Node, int]] = []  # open section, line of its '{'
+    # Open section, its children, line of its '{'
+    stack: list[tuple[Node, list[Node], int]] = []
 
     def peek(index: int) -> Optional[_Token]:
         return tokens[index] if index < len(tokens) else None
 
     def open_section(node: Node, brace_line: int) -> list[Node]:
-        node.children = []
+        children: list[Node] = []
+        node.children = children
         siblings.append(node)
-        stack.append((node, brace_line))
-        return node.children
+        stack.append((node, children, brace_line))
+        return children
 
     i = 0
     while i < len(tokens):
@@ -116,9 +118,9 @@ def parse(text: str, escapes: bool = False) -> tuple[list[Node], list[tuple[int,
             if not stack:
                 errors.append((tok.line, "Unmatched closing brace '}'"))
                 continue
-            node, _ = stack.pop()
+            node, _, _ = stack.pop()
             node.end_line = tok.line
-            siblings = stack[-1][0].children if stack else root
+            siblings = stack[-1][1] if stack else root
             continue
 
         if tok.kind == "cond":
@@ -154,7 +156,7 @@ def parse(text: str, escapes: bool = False) -> tuple[list[Node], list[tuple[int,
             i += 1
         siblings.append(node)
 
-    for node, brace_line in stack:
+    for node, _, brace_line in stack:
         errors.append((brace_line, "Unclosed opening brace '{'"))
         node.end_line = last_line
 
