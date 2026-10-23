@@ -12,7 +12,7 @@ from .config import (
     check_severities,
     load_config,
 )
-from .linter import Issue, Linter
+from .linter import Issue, Linter, relative_name
 from .rules import GENERIC, RULE_SETS, State
 
 
@@ -29,7 +29,7 @@ def github_annotation(issue: Issue, path: Optional[Path]) -> str:
     props = []
     # Directory-level issues (e.g. "menu/") can't be anchored to a file
     if path is not None and path.is_file():
-        props.append(f"file={_escape_property(Path(os.path.relpath(path)).as_posix())}")
+        props.append(f"file={_escape_property(relative_name(path))}")
         if issue.line > 0:
             props.append(f"line={issue.line}")
     props.append(f"title={_escape_property(issue.check)}")
@@ -41,7 +41,7 @@ def github_annotation(issue: Issue, path: Optional[Path]) -> str:
 
 def lint(config: Config) -> tuple[Linter, list[State]]:
     linter = Linter(config.root, config.checks)
-    states: dict[type, State] = {}
+    states: dict[Optional[type[State]], State] = {}
     for fileset in config.files:
         state_type = RULE_SETS[fileset.rules].state if fileset.rules else None
         if state_type and state_type not in states:
@@ -54,25 +54,39 @@ def lint(config: Config) -> tuple[Linter, list[State]]:
             option: fileset.options.get(option, values[0])
             for option, values in rule_set.options.items()
         }
-        matches = {
-            (config.root / match).resolve()
-            for pattern in fileset.globs
-            for match in glob.glob(pattern, root_dir=config.root, recursive=True)
-        }
+        matches = set()
+        for pattern in fileset.globs:
+            found = {
+                path
+                for match in glob.glob(pattern, root_dir=config.root, recursive=True)
+                if (path := (config.root / match).resolve()).is_file()
+            }
+            if not found:
+                linter.add_issue(
+                    pattern, 0, "no-matching-files", f"No files match '{pattern}'"
+                )
+            matches |= found
         # A file matched by several entries only gets the first entry's rules
-        paths = sorted(p for p in matches - seen if p.is_file())
+        paths = sorted(matches - seen)
         seen.update(paths)
 
         label = ", ".join(fileset.globs)
         if not paths:
-            print(f"No files match {label}")
+            if matches:
+                print(f"Files matching {label} are already checked by an earlier entry")
             continue
         shown = f" ({', '.join(options.values())})" if options else ""
         rules = f" with {rule_set.name}{shown} rules" if fileset.rules else ""
         print(f"Checking {len(paths)} file(s) matching {label}{rules}")
 
         loaded = (
-            linter.load(p, escapes=rule_set.escapes, defaults=rule_set.checks)
+            # Valve's own files may be UTF-16, SourceMod and mm-utils only read UTF-8
+            linter.load(
+                p,
+                escapes=rule_set.escapes,
+                defaults=rule_set.checks,
+                utf16=rule_set is GENERIC,
+            )
             for p in paths
         )
         docs = [doc for doc in loaded if doc]
@@ -188,18 +202,29 @@ def main(argv: Optional[list[str]] = None) -> int:
     linter, states = lint(config)
     summary = linter.summary()
     print(summary)
-    if args.output and linter.issues:
-        Path(args.output).write_text(summary + "\n", encoding="utf-8")
 
     errors = sum(1 for i in linter.issues if i.severity == "error")
     warnings = sum(1 for i in linter.issues if i.severity == "warning")
-    for state in states:
-        state.write_reports(errors, warnings)
 
     # Info is expected noise (e.g. untranslated menus), kept to the summary and output file
     if os.environ.get("GITHUB_ACTIONS") == "true":
         for issue in linter.issues:
             if issue.severity != "info":
                 print(github_annotation(issue, linter.root / issue.file))
+
+    # Exit 2: setup problem, not lint errors
+    try:
+        if args.output:
+            output = Path(args.output)
+            # A stale file would read as this run's issues
+            if linter.issues:
+                output.write_text(summary + "\n", encoding="utf-8")
+            else:
+                output.unlink(missing_ok=True)
+        for state in states:
+            state.write_reports(errors, warnings)
+    except OSError as e:
+        print(f"Failed to write: {e}")
+        return 2
 
     return 1 if errors > 0 else 0

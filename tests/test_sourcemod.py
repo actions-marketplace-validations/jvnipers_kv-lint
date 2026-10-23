@@ -133,3 +133,15 @@ def test_folder_named_like_a_language_needs_a_base_file(tmp_path):
         )
         == []
     )
+
+
+@pytest.mark.parametrize("name", ["a.phrases.txt", "z.phrases.txt"])
+def test_language_folder_copy_wins_over_base(tmp_path, name):
+    base = BASE.replace(
+        '"{1} of {2} votes"', '"{1} of {2} votes"\n\t\t"de"\t"{1} von {2}"'
+    )
+    german = '"Phrases"\n{\n\t"Votes"\n\t{\n\t\t"de"\t"{1} Stimmen"\n\t}\n}\n'
+    assert summary(sourcemod(tmp_path, name, german, base)) == [
+        (f"translations/de/{name}", 5, "error", "duplicate-key"),
+        (f"translations/de/{name}", 5, "error", "missing-placeholder"),
+    ]

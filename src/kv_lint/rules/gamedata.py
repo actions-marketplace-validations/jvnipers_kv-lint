@@ -25,19 +25,27 @@ SIGNATURE_KEYS = {"sourcemod": {"library"}, "ida": {"library", "allow_multi_matc
 OFFSET_KEYS = {"sourcemod": {"class", "prop"}, "ida": set()}
 # Pairs in DHooks "Functions" entries naming other gamedata entries
 REFERENCES = {"signature": "Signatures", "offset": "Offsets", "address": "Addresses"}
+SECTIONS = ("Signatures", "Offsets", "Addresses", "Patches", "Functions", "Keys")
+
+
+def _scope(path: Path) -> Path:
+    # SourceMod merges a master.games.txt folder (approximated as all of it), else x.txt with custom/x.txt
+    folder = path.parent.parent if path.parent.name == "custom" else path.parent
+    if (folder / "master.games.txt").is_file():
+        return folder
+    return folder / path.name
 
 
 class Gamedata(State):
     def __init__(self, linter, config) -> None:
         super().__init__(linter, config)
         self._add_issue = linter.add_issue
-        # SourceMod resolves names across a *.games/ folder, so names are collected per folder
         self.names: dict[Path, dict[str, set[str]]] = {}
         self.references: list[tuple[Path, str, str, str, int, str]] = []
 
     def lint(self, doc: Document, style: str) -> None:
         names = self.names.setdefault(
-            doc.path.parent, {section: set() for section in REFERENCES.values()}
+            _scope(doc.path), {section: set() for section in REFERENCES.values()}
         )
         # SourceMod streams the file, so repeated game and section blocks merge.
         # KeyValues FindKey (ida style) only reads the first. A repeated entry is lost either way.
@@ -64,7 +72,7 @@ class Gamedata(State):
                     self._once(
                         doc,
                         blocks,
-                        (game.key,),
+                        (game.key.lower(),),
                         game,
                         f"Game section '{game.key}' repeats, only the first is read",
                     )
@@ -86,46 +94,51 @@ class Gamedata(State):
                             f"Expected a section in '{game.key}', found key-value pair '{section.key}'",
                         )
                         continue
+                    name = section.key
                     if style == "ida":
+                        # KeyValues FindKey ignores case
+                        name = next(
+                            (s for s in SECTIONS if s.lower() == name.lower()), name
+                        )
+                        if name != section.key:
+                            self._add_issue(
+                                doc.name,
+                                section.line,
+                                "gamedata-key-case",
+                                f"Section '{section.key}' in '{game.key}' should be '{name}'",
+                                doc.context(section.line),
+                            )
                         self._once(
                             doc,
                             blocks,
-                            (game.key, section.key),
+                            (game.key.lower(), name.lower()),
                             section,
                             f"Section '{section.key}' repeats in '{game.key}', only the first is read",
                         )
-                    if section.key not in (
-                        "Signatures",
-                        "Offsets",
-                        "Addresses",
-                        "Patches",
-                        "Functions",
-                        "Keys",
-                    ):
+                    if name not in SECTIONS:
                         continue
                     for entry in section.children:
                         self._once(
                             doc,
                             entries,
-                            (scope, section.key, entry.key),
+                            (scope, name, entry.key),
                             entry,
-                            f"'{entry.key}' is defined twice in '{game.key}' {section.key}",
+                            f"'{entry.key}' is defined twice in '{game.key}' {name}",
                         )
-                        if section.key == "Keys":
+                        if name == "Keys":
                             continue
                         if entry.children is None:
                             self._structure(
                                 doc,
                                 entry,
-                                f"Expected a '{section.key}' entry section, found key-value pair '{entry.key}'",
+                                f"Expected a '{name}' entry section, found key-value pair '{entry.key}'",
                             )
                         else:
-                            self._entry(doc, style, section.key, entry, names)
+                            self._entry(doc, style, name, entry, names)
 
     def finish(self) -> None:
-        for folder, section, name, file, line, entry in self.references:
-            if name not in self.names[folder][section]:
-                kind = next(k for k, s in REFERENCES.items() if s == section)
+        for folder, kind, name, file, line, entry in self.references:
+            if name not in self.names[folder][REFERENCES[kind]]:
                 self._add_issue(
                     file,
                     line,
@@ -148,7 +161,7 @@ class Gamedata(State):
 
     def _master(self, doc: Document, root: kv.Node) -> None:
         # master.games.txt lists the folder's gamedata files, each with optional conditions
-        for entry in root.children:
+        for entry in root.children or []:
             if not (doc.path.parent / entry.key).is_file():
                 self._add_issue(
                     doc.name,
@@ -162,7 +175,14 @@ class Gamedata(State):
             doc.name, node.line, "gamedata-structure", message, doc.context(node.line)
         )
 
-    def _entry(self, doc, style, section, entry, names) -> None:
+    def _entry(
+        self,
+        doc: Document,
+        style: str,
+        section: str,
+        entry: kv.Node,
+        names: dict[str, set[str]],
+    ) -> None:
         if section == "Signatures":
             names["Signatures"].add(entry.key)
             self._signature(doc, style, entry)
@@ -212,7 +232,7 @@ class Gamedata(State):
     def _missing_platform(
         self, doc: Document, kind: str, entry: kv.Node, platforms: set[str]
     ) -> None:
-        families = {p.rstrip("64") for p in platforms} & {"windows", "linux"}
+        families = {p.removesuffix("64") for p in platforms} & {"windows", "linux"}
         if len(families) == 1:
             missing = ({"windows", "linux"} - families).pop()
             self._add_issue(
@@ -231,7 +251,7 @@ class Gamedata(State):
         child: kv.Node,
         wildcards: bool,
     ) -> None:
-        value = child.value
+        value = child.value or ""
         where = f"{kind} '{entry.key}' ({child.key})"
         if value.startswith("@") and wildcards:
             if len(value) == 1 or any(c.isspace() for c in value):
@@ -296,7 +316,7 @@ class Gamedata(State):
     def _number(
         self, doc: Document, style: str, kind: str, entry: kv.Node, child: kv.Node
     ) -> None:
-        value = child.value.strip()
+        value = (child.value or "").strip()
         if not NUMBER.fullmatch(value):
             self._add_issue(
                 doc.name,
@@ -307,7 +327,7 @@ class Gamedata(State):
             )
         elif style == "sourcemod" and re.fullmatch(r"-?0\d+", value):
             # strtol stops at the first non-octal digit: "0108" is 010
-            octal = re.match(r"-?0[0-7]*", value).group()
+            octal = re.split("[89]", value)[0]
             self._add_issue(
                 doc.name,
                 child.line,
@@ -319,7 +339,7 @@ class Gamedata(State):
     def _signature(self, doc: Document, style: str, entry: kv.Node) -> None:
         platforms, has_library = set(), False
         seen: dict[tuple, int] = {}
-        for child in entry.children:
+        for child in entry.children or []:
             self._once(
                 doc,
                 seen,
@@ -350,7 +370,7 @@ class Gamedata(State):
     def _offset(self, doc: Document, style: str, entry: kv.Node) -> None:
         platforms, netprop = set(), False
         seen: dict[tuple, int] = {}
-        for child in entry.children:
+        for child in entry.children or []:
             self._once(
                 doc,
                 seen,
@@ -375,25 +395,18 @@ class Gamedata(State):
     def _address(self, doc: Document, entry: kv.Node) -> None:
         has_signature = False
         # A platform subsection holds read/offset entries for that platform only
-        for scope in [entry] + [c for c in entry.children if c.children is not None]:
+        for scope in [entry] + [
+            c for c in entry.children or [] if c.children is not None
+        ]:
             last_offset = None
-            for child in scope.children:
-                if child.children is not None:
+            for child in scope.children or []:
+                if child.value is None:
                     if scope is entry:
                         self._platform(doc, "sourcemod", "address", entry, child)
                     continue
                 if child.key == "signature":
                     has_signature = True
-                    self.references.append(
-                        (
-                            doc.path.parent,
-                            "Signatures",
-                            child.value,
-                            doc.name,
-                            child.line,
-                            entry.key,
-                        )
-                    )
+                    self._reference(doc, entry, "signature", child.value, child.line)
                 elif child.key in ("read", "offset"):
                     if last_offset is not None:
                         self._structure(
@@ -421,7 +434,7 @@ class Gamedata(State):
 
     def _patch(self, doc: Document, entry: kv.Node) -> None:
         seen: dict[tuple, int] = {}
-        for child in entry.children:
+        for child in entry.children or []:
             self._once(
                 doc,
                 seen,
@@ -441,19 +454,16 @@ class Gamedata(State):
     def _references(self, doc: Document, entry: kv.Node, node: kv.Node) -> None:
         for child in node.children or []:
             if child.value is not None and child.key in REFERENCES:
-                section = REFERENCES[child.key]
-                self.references.append(
-                    (
-                        doc.path.parent,
-                        section,
-                        child.value,
-                        doc.name,
-                        child.line,
-                        entry.key,
-                    )
-                )
+                self._reference(doc, entry, child.key, child.value, child.line)
             elif child.children is not None:
                 self._references(doc, entry, child)
+
+    def _reference(
+        self, doc: Document, entry: kv.Node, kind: str, name: str, line: int
+    ) -> None:
+        self.references.append(
+            (_scope(doc.path), kind, name, doc.name, line, entry.key)
+        )
 
 
 class GamedataRules(RuleSet):
@@ -464,7 +474,8 @@ class GamedataRules(RuleSet):
     options = {"style": ("sourcemod", "ida")}
 
     def lint(
-        self, state: Gamedata, docs: list[Document], options: dict[str, str]
+        self, state: Optional[State], docs: list[Document], options: dict[str, str]
     ) -> None:
+        assert isinstance(state, Gamedata)
         for doc in docs:
             state.lint(doc, options["style"])

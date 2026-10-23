@@ -53,21 +53,22 @@ def check_severities(table: dict, where: str) -> dict[str, str]:
     return dict(table)
 
 
-def check_options(rules: str, options: dict[str, str], where: str) -> dict[str, str]:
+def _check_options(rules: str, options: dict[str, str], where: str) -> None:
     allowed = RULE_SETS[rules].options
     for option, value in options.items():
         if value not in allowed[option]:
             raise ConfigError(
                 f"{where} has unknown {option} '{value}' (expected one of: {', '.join(allowed[option])})"
             )
-    return options
 
 
 def load_config(path: Path) -> Config:
     try:
         with open(path, "rb") as f:
             data = tomllib.load(f)
-    except tomllib.TOMLDecodeError as e:
+    except FileNotFoundError:
+        raise
+    except (tomllib.TOMLDecodeError, OSError, UnicodeDecodeError) as e:
         raise ConfigError(f"{path}: {e}") from e
 
     _check_keys(
@@ -85,7 +86,10 @@ def load_config(path: Path) -> Config:
         checks=check_severities(checks, f"[checks] in {path.name}"),
     )
 
-    for index, entry in enumerate(data.get("files", []), 1):
+    files = data.get("files", [])
+    if not isinstance(files, list) or not all(isinstance(e, dict) for e in files):
+        raise ConfigError(f"'files' in {path.name} must be [[files]] tables")
+    for index, entry in enumerate(files, 1):
         where = f"[[files]] entry {index}"
         rules = _optional_str(entry, "rules", where)
         if rules is not None and rules not in RULE_SETS:
@@ -100,10 +104,12 @@ def load_config(path: Path) -> Config:
         if not globs or not all(isinstance(g, str) for g in globs):
             raise ConfigError(f"{where} needs 'glob' as a string or list of strings")
         options = {
-            o: _optional_str(entry, o, where) for o in option_names if o in entry
+            o: value
+            for o in option_names
+            if (value := _optional_str(entry, o, where)) is not None
         }
         if rules:
-            check_options(rules, options, where)
+            _check_options(rules, options, where)
         config.files.append(FileSet(globs, rules, options))
 
     if not config.files:

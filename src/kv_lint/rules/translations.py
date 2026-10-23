@@ -13,6 +13,8 @@ from ..linter import Document, Linter
 from .base import RuleSet, State
 
 TAG = re.compile(r"\{([^{}]*)\}")
+# cs2kz prints "{{" as "{": "{{KZ}" shows "{KZ}"
+ESCAPED_BRACE = re.compile(r"\{\{[^{}]*\}?")
 
 
 @dataclass
@@ -31,7 +33,7 @@ class PhraseBlock:
     style: str = "sourcemod"
     languages: dict[str, Entry] = field(default_factory=dict)
     format_spec: Optional[str] = None
-    placeholders: set = field(default_factory=set)
+    placeholders: set[str] = field(default_factory=set)
     ignored: bool = False
 
 
@@ -39,7 +41,6 @@ class PhraseBlock:
 class MenuCommand:
     name: str
     start_line: int
-    end_line: int
     hotkey: Optional[str] = None
     label: Optional[str] = None
     cmd: Optional[str] = None
@@ -49,11 +50,8 @@ class MenuCommand:
 class MenuGroup:
     name: str
     start_line: int
-    end_line: int
-    hotkey: Optional[str] = None
-    title: Optional[str] = None
     timeout: Optional[str] = None
-    commands: list = field(default_factory=list)
+    commands: list[MenuCommand] = field(default_factory=list)
 
 
 def _sections(node: kv.Node) -> list[kv.Node]:
@@ -123,27 +121,8 @@ class Translations(State):
         "vietnamese": "vi",
     }
 
-    KNOWN_COLOR_TAGS = {
-        "default",
-        "red",
-        "lightred",
-        "darkred",
-        "bluegrey",
-        "blue",
-        "darkblue",
-        "purple",
-        "orchid",
-        "yellow",
-        "gold",
-        "lightgreen",
-        "green",
-        "lime",
-        "grey",
-        "grey2",
-    }
-
-    # mm-utils chat_colors.cpp, replaced case-sensitively
-    MM_UTILS_COLOR_TAGS = {
+    # Shared by cs2kz utils_print.cpp and mm-utils chat_colors.cpp
+    COLOR_TAGS = {
         "default",
         "darkred",
         "purple",
@@ -161,6 +140,8 @@ class Translations(State):
         "lightred",
         "gold",
     }
+    # CS:GO SourceMod calls \x05 lightgreen (cs2kz: olive); unknown colors count as placeholders
+    SOURCEMOD_COLOR_TAGS = COLOR_TAGS | {"lightgreen"}
 
     # No space flag: "100% of" would otherwise parse as "% o"
     PRINTF_SPECIFIER = re.compile(
@@ -180,20 +161,20 @@ class Translations(State):
         self.docs: dict[str, Document] = {}
         self.global_languages: set[str] = set()
 
-        self.languages_source = (
-            languages_path.name if languages_path else "default language list"
-        )
+        self.languages_source = "default language list"
         self.language_map, self.known_languages = self._parse_languages(languages_path)
-        self._code_to_name = {v: k for k, v in self.language_map.items()}
+        # "koreana" and "korean" are both "ko"
+        self._code_to_names: dict[str, list[str]] = defaultdict(list)
+        for name, code in self.language_map.items():
+            self._code_to_names[code].append(name)
+        self._code_to_name = {c: names[0] for c, names in self._code_to_names.items()}
 
         self.menu_dir: Optional[Path] = None
         self.menu_files: dict[str, list[MenuGroup]] = {}
-        self.menu_languages: set[str] = set()
         self.menu_file_count = 0
         self._report: Optional[dict] = None
 
     def _default_language_data(self) -> tuple[dict[str, str], set[str]]:
-        self.languages_source = "default language list"
         return dict(self.DEFAULT_LANGUAGE_MAP), set(self.DEFAULT_LANGUAGE_MAP.values())
 
     def _parse_languages(self, path: Optional[Path]) -> tuple[dict[str, str], set[str]]:
@@ -201,14 +182,15 @@ class Translations(State):
             print("No languages file configured, using default language list")
             return self._default_language_data()
 
-        if not path.exists():
-            print(f"{path} not found, using default language list")
-            return self._default_language_data()
-
         try:
             text = path.read_text(encoding="utf-8-sig")
         except Exception as e:
-            print(f"Failed to read {path}: {e}, using default language list")
+            self._add_issue(
+                self.linter.display_name(path),
+                0,
+                "unreadable-file",
+                f"Could not read languages file, using default language list: {e}",
+            )
             return self._default_language_data()
 
         nodes, _ = kv.parse(text)
@@ -225,21 +207,25 @@ class Translations(State):
 
         if name_to_code:
             print(f"Loaded {len(name_to_code)} language entries from {path.name}")
+            self.languages_source = path.name
             return name_to_code, set(name_to_code.values())
         else:
             print(f"No languages found in {path.name}, using default language list")
             return self._default_language_data()
 
-    def _get_language_display_name(self, code: str) -> str:
-        if code in self._code_to_name:
-            return f"{code} ({self._code_to_name[code]})"
-        return code
+    @staticmethod
+    def _unescape(block: PhraseBlock, value: str) -> str:
+        # Placeholders are filled before "{{" is read, so "{{1}" is "{" then {1}
+        if block.placeholders:
+            names = "|".join(re.escape(p) for p in block.placeholders)
+            value = re.sub(rf"\{{(?=\{{(?:{names})\}})", "", value)
+        return ESCAPED_BRACE.sub("", value)
 
-    def _extract_placeholders(self, value: str) -> set[str]:
+    def _extract_placeholders(self, block: PhraseBlock, value: str) -> set[str]:
         return {
             tag
-            for tag in TAG.findall(value)
-            if tag.lower() not in self.KNOWN_COLOR_TAGS and not tag.startswith("#")
+            for tag in TAG.findall(self._unescape(block, value))
+            if tag.lower() not in self.SOURCEMOD_COLOR_TAGS and not tag.startswith("#")
         }
 
     def _extract_printf_specifiers(self, value: str) -> list[str]:
@@ -252,10 +238,10 @@ class Translations(State):
         for blocks in self.all_phrase_blocks.values():
             for block in blocks:
                 if not block.ignored:
-                    self.global_languages.update(block.languages.keys())
-
-        for blocks in self.all_phrase_blocks.values():
-            for block in blocks:
+                    # Unknown codes are typos, already errors, not report languages
+                    self.global_languages.update(
+                        block.languages.keys() & self.known_languages
+                    )
                 if block.style == "mm-utils":
                     self._check_mm_utils_phrase(block)
                 else:
@@ -263,6 +249,8 @@ class Translations(State):
                 self._check_phrase_block(block)
 
         self._check_language_consistency()
+        if "english.txt" in self.menu_files and self.menu_dir is not None:
+            self._check_missing_menu_languages(self.menu_dir)
 
     def _base_file(self, doc: Document) -> str:
         # SourceMod: translations/de/x.phrases.txt adds "de" to translations/x.phrases.txt
@@ -275,7 +263,17 @@ class Translations(State):
         self.docs[doc.name] = doc
         tracker = self.linter.ignore_trackers[doc.name]
         base = self._base_file(doc)
+        if style == "mm-utils" and base != doc.name:
+            self._add_issue(
+                doc.name,
+                0,
+                "phrase-structure",
+                "mm-utils only loads *.phrases.txt from the translations folder itself, so this file is never read",
+            )
+            return
         blocks = self.all_phrase_blocks.setdefault(base, [])
+        # mm-utils shares one phrase table across files
+        scope = base if style == "sourcemod" else ""
 
         for root in doc.nodes:
             if root.children is None:
@@ -310,7 +308,18 @@ class Translations(State):
                     block.start_line, block.end_line
                 )
 
+                first_keys: dict[str, str] = {}
+                translated = False
                 for child in node.children:
+                    if child.key == "#format" and translated and style == "sourcemod":
+                        self._add_issue(
+                            doc.name,
+                            child.line,
+                            "format-order",
+                            f"#format comes after a translation in phrase '{node.key}', SourceMod ignores it",
+                            doc.context(child.line),
+                        )
+                    translated |= child.value is not None and child.key != "#format"
                     if child.value is None:
                         self._add_issue(
                             doc.name,
@@ -322,18 +331,33 @@ class Translations(State):
                     elif child.key == "#format":
                         block.format_spec = child.value
                         block.placeholders = self._parse_format_spec(child.value)
-                    elif child.key not in block.languages:
-                        # Duplicates are reported by the generic duplicate key check
+                    elif style == "mm-utils":
+                        # mm-utils lowercases keys, last repeat wins. Exact repeats: generic check
+                        lang = child.key.lower()
+                        first = first_keys.setdefault(lang, child.key)
+                        if first != child.key:
+                            self._add_issue(
+                                doc.name,
+                                child.line,
+                                "duplicate-key",
+                                f"Duplicate '{lang}' translation for phrase '{node.key}', mm-utils ignores the case of '{child.key}'",
+                                f"Also at line {block.languages[lang].line}",
+                            )
+                        block.languages[lang] = Entry(doc.name, child.line, child.value)
+                    else:
+                        # SourceMod keeps the last of a repeat, which the generic check reports
                         block.languages[child.key] = Entry(
                             doc.name, child.line, child.value
                         )
 
-                existing = self._phrases.get((base, node.key))
+                existing = self._phrases.get((scope, node.key))
                 if existing is None:
-                    self._phrases[(base, node.key)] = block
+                    self._phrases[(scope, node.key)] = block
                     blocks.append(block)
                 elif existing.file != doc.name:
-                    self._merge(existing, block, block.file == base)
+                    self._merge(
+                        existing, block, style == "sourcemod" and block.file == base
+                    )
                 # A phrase repeated in one file is a duplicate key, and lookups take the first
 
     def _merge(
@@ -358,18 +382,19 @@ class Translations(State):
             if lang not in block.languages:
                 block.languages[lang] = entry
                 continue
-            kept, dropped = (
+            first, repeat = (
                 (entry, block.languages[lang])
                 if other_is_base
                 else (block.languages[lang], entry)
             )
-            block.languages[lang] = kept
+            # SourceMod reads language folders after the base file
+            block.languages[lang] = repeat if block.style == "sourcemod" else first
             self._add_issue(
-                dropped.file,
-                dropped.line,
+                repeat.file,
+                repeat.line,
                 "duplicate-key",
                 f"Duplicate '{lang}' translation for phrase '{block.name}'",
-                f"Also at {kept.file}:{kept.line}",
+                f"Also at {first.file}:{first.line}",
             )
 
     def _parse_format_spec(self, format_value: str) -> set[str]:
@@ -384,7 +409,10 @@ class Translations(State):
         return placeholders
 
     def _tags(self, block: PhraseBlock, lang: str, entry: Entry) -> list[str]:
-        stray = TAG.sub("", entry.value)
+        value = entry.value
+        if block.style == "sourcemod":
+            value = self._unescape(block, value)
+        stray = TAG.sub("", value)
         for brace in "{}":
             if brace in stray:
                 self._add_issue(
@@ -394,19 +422,38 @@ class Translations(State):
                     f"Unmatched '{brace}' in '{lang}' translation for '{block.name}'",
                     self._context(entry),
                 )
-        return TAG.findall(entry.value)
+        return TAG.findall(value)
 
     def _check_phrase_format_tags(self, block: PhraseBlock) -> None:
         valid_placeholders = set(block.placeholders)
         if "en" in block.languages:
             valid_placeholders.update(
-                self._extract_placeholders(block.languages["en"].value)
+                self._extract_placeholders(block, block.languages["en"].value)
             )
 
         for lang, entry in block.languages.items():
-            for tag in self._tags(block, lang, entry):
-                if (
-                    tag.lower() not in self.KNOWN_COLOR_TAGS
+            tags = self._tags(block, lang, entry)
+            if block.format_spec is not None:
+                numbers = [t for t in tags if t.isdigit()]
+                for tag in sorted({t for t in numbers if numbers.count(t) > 1}):
+                    self._add_issue(
+                        entry.file,
+                        entry.line,
+                        "repeated-placeholder",
+                        f"{{{tag}}} repeats in '{lang}' translation for '{block.name}', SourceMod prints the repeat as text",
+                        self._context(entry),
+                    )
+            for tag in tags:
+                if tag != tag.lower() and tag.lower() in self.SOURCEMOD_COLOR_TAGS:
+                    self._add_issue(
+                        entry.file,
+                        entry.line,
+                        "color-tag-case",
+                        f"Color tag {{{tag}}} should be lowercase, cs2kz prints it as text",
+                        self._context(entry),
+                    )
+                elif (
+                    tag.lower() not in self.SOURCEMOD_COLOR_TAGS
                     and tag not in valid_placeholders
                     and not re.match(r"^\d+$", tag)
                     and not tag.startswith("#")
@@ -422,7 +469,7 @@ class Translations(State):
     def _check_mm_utils_phrase(self, block: PhraseBlock) -> None:
         name_args = format_args(block.name)
         # Non-color tags in the name are filled by the plugin itself (e.g. cs2menus FillTemplate)
-        placeholders = set(TAG.findall(block.name)) - self.MM_UTILS_COLOR_TAGS
+        placeholders = set(TAG.findall(block.name)) - self.COLOR_TAGS
         for lang, entry in block.languages.items():
             tags = self._tags(block, lang, entry)
             missing = placeholders - set(tags)
@@ -434,7 +481,7 @@ class Translations(State):
                     f"Missing placeholder(s) {{{', '.join(sorted(missing))}}} in '{lang}' translation for '{block.name}' (present in the phrase name)",
                 )
             for tag in tags:
-                if tag not in self.MM_UTILS_COLOR_TAGS and tag not in placeholders:
+                if tag not in self.COLOR_TAGS and tag not in placeholders:
                     self._add_issue(
                         entry.file,
                         entry.line,
@@ -482,14 +529,16 @@ class Translations(State):
 
         if "en" in block.languages and block.style == "sourcemod":
             en_value = block.languages["en"].value
-            en_placeholders = self._extract_placeholders(en_value)
+            en_placeholders = self._extract_placeholders(block, en_value)
             en_specifiers = self._extract_printf_specifiers(en_value)
 
             for lang, entry in block.languages.items():
                 if lang == "en":
                     continue
 
-                missing = en_placeholders - self._extract_placeholders(entry.value)
+                missing = en_placeholders - self._extract_placeholders(
+                    block, entry.value
+                )
                 if missing:
                     self._add_issue(
                         entry.file,
@@ -529,38 +578,43 @@ class Translations(State):
                         )
 
     def lint_radiopanel(self, docs: list[Document]) -> None:
-        if not docs:
-            return
-        self.menu_file_count += len(docs)
-
         english = next((d for d in docs if d.path.name == "english.txt"), None)
-        self.menu_dir = (english or docs[0]).path.parent
+        if docs and self.menu_dir is None:
+            self.menu_dir = (english or docs[0]).path.parent
+        # Reports cover one menu folder
+        for folder in sorted({d.path.parent for d in docs} - {self.menu_dir}):
+            self._add_issue(
+                self.linter.display_name(folder) + "/",
+                0,
+                "menu-structure",
+                "Menu files from a second folder aren't supported, so these are skipped",
+            )
+        docs = [d for d in docs if d.path.parent == self.menu_dir]
+        if not docs or self.menu_dir is None:
+            return
+        if english and english.path.parent != self.menu_dir:
+            english = None
+        self.menu_file_count += len(docs)
         menu_dir_name = self.linter.display_name(self.menu_dir) + "/"
 
-        if english is None:
-            if not (self.menu_dir / "english.txt").exists():
-                self._add_issue(
-                    menu_dir_name,
-                    0,
-                    "missing-menu-reference",
-                    "Missing english.txt - this is the reference file for menu translations",
-                )
+        if english is not None:
+            self.menu_files["english.txt"] = self._parse_menu_file(english)
+        english_groups = self.menu_files.get("english.txt")
+        if english_groups is None:
+            if (self.menu_dir / "english.txt").exists():
+                message = "english.txt isn't matched by the radiopanel glob, so menus aren't compared"
+            else:
+                message = "Missing english.txt - this is the reference file for menu translations"
+            self._add_issue(menu_dir_name, 0, "missing-menu-reference", message)
             return
-
-        english_groups = self._parse_menu_file(english)
-        self.menu_files["english.txt"] = english_groups
-        self.menu_languages.add("english")
 
         for doc in docs:
             if doc is english:
                 continue
 
-            self.menu_languages.add(doc.path.stem)
             lang_groups = self._parse_menu_file(doc)
             self.menu_files[doc.path.name] = lang_groups
             self._compare_menu_to_english(doc, lang_groups, english_groups)
-
-        self._check_missing_menu_languages(menu_dir_name)
 
     def _parse_menu_file(self, doc: Document) -> list[MenuGroup]:
         # RadioPanel.txt { Groups { <group> { kv..., Commands { <command> { kv... } } } } }
@@ -576,7 +630,7 @@ class Translations(State):
     def _parse_menu_group(self, doc: Document, node: kv.Node) -> MenuGroup:
         if not node.key:
             self._add_issue(doc.name, node.line, "menu-structure", "Empty group name")
-        group = MenuGroup(name=node.key, start_line=node.line, end_line=node.end_line)
+        group = MenuGroup(name=node.key, start_line=node.line)
 
         for child in node.children or []:
             if child.value is None:
@@ -596,10 +650,8 @@ class Translations(State):
                     "Empty key in key-value pair",
                     doc.context(child.line),
                 )
-            elif key == "hotkey":
-                group.hotkey = child.value
-            elif key == "title":
-                group.title = child.value
+            elif key in ("hotkey", "title"):
+                pass  # Valid, but not compared between languages
             elif key == "timeout":
                 group.timeout = child.value
             elif key in self.MENU_COMMAND_KEYS:
@@ -624,9 +676,7 @@ class Translations(State):
     ) -> MenuCommand:
         if not node.key:
             self._add_issue(doc.name, node.line, "menu-structure", "Empty command name")
-        command = MenuCommand(
-            name=node.key, start_line=node.line, end_line=node.end_line
-        )
+        command = MenuCommand(name=node.key, start_line=node.line)
 
         for child in node.children or []:
             if child.value is None:
@@ -754,33 +804,43 @@ class Translations(State):
                     f"Extra menu group '{lang_group_name}' not in english.txt",
                 )
 
-    def _check_missing_menu_languages(self, menu_dir_name: str) -> None:
+    def _menu_name(self, code: str) -> Optional[str]:
+        names = self._code_to_names.get(code, [])
+        for name in names:
+            if f"{name}.txt" in self.menu_files or (
+                self.menu_dir is not None and (self.menu_dir / f"{name}.txt").exists()
+            ):
+                return name
+        return names[0] if names else None
+
+    def _check_missing_menu_languages(self, menu_dir: Path) -> None:
         missing_menus = []
+        menu_languages = {Path(f).stem for f in self.menu_files}
 
         for lang_code in self.known_languages:
-            lang_name = self._code_to_name.get(lang_code)
-            if lang_name and lang_name not in self.menu_languages:
-                menu_file = self.menu_dir / f"{lang_name}.txt"
+            lang_name = self._menu_name(lang_code)
+            if lang_name and lang_name not in menu_languages:
+                menu_file = menu_dir / f"{lang_name}.txt"
                 if not menu_file.exists():
                     missing_menus.append((lang_name, lang_code))
 
         for lang_name, lang_code in sorted(missing_menus, key=lambda x: x[0]):
             self._add_issue(
-                menu_dir_name,
+                self.linter.display_name(menu_dir) + "/",
                 0,
                 "missing-menu-file",
                 f"Missing menu translation file: {lang_name}.txt (for language code '{lang_code}')",
             )
 
     def _collect_missing_menu_data(self) -> dict:
-        if "english.txt" not in self.menu_files:
+        if "english.txt" not in self.menu_files or self.menu_dir is None:
             return {}
 
         english_groups = self.menu_files["english.txt"]
         missing_data = {}
 
         for lang_code in sorted(self.known_languages):
-            lang_name = self._code_to_name.get(lang_code)
+            lang_name = self._menu_name(lang_code)
             if not lang_name:
                 continue
 
@@ -904,7 +964,7 @@ class Translations(State):
             "languages": languages,
             "files": files,
             "menu": {
-                "languages_with_menu": sorted(self.menu_languages),
+                "languages_with_menu": sorted(Path(f).stem for f in self.menu_files),
                 "missing": menu_missing,
             },
         }
@@ -922,7 +982,9 @@ class Translations(State):
             coverage = self._coverage_pct(info["translated"], total)
             bar_length = int(coverage / 5)
             bar = "█" * bar_length + "░" * (20 - bar_length)
-            lang_display = self._get_language_display_name(lang)
+            lang_display = (
+                f"{lang} ({info['name']})" if lang in self._code_to_name else lang
+            )
             lines.append(
                 f"  {lang_display:20} [{bar}] {coverage:5.1f}% ({info['translated']}/{total})"
             )
@@ -932,7 +994,7 @@ class Translations(State):
         missing = self.report_data()["menu"]["missing"]
         lines = []
         for lang_code in sorted(self.known_languages):
-            lang_name = self._code_to_name.get(lang_code, lang_code)
+            lang_name = self._menu_name(lang_code) or lang_code
             if lang_code in missing:
                 data = missing[lang_code]
                 if not data["file_exists"]:
@@ -1034,11 +1096,8 @@ class Translations(State):
 
     @staticmethod
     def write(path: Path, content: str, label: str) -> None:
-        try:
-            path.write_text(content, encoding="utf-8", newline="\n")
-            print(f"Missing translations {label} written to: {path}")
-        except Exception as e:
-            print(f"Failed to write {label} to {path}: {e}")
+        path.write_text(content, encoding="utf-8", newline="\n")
+        print(f"Missing translations {label} written to: {path}")
 
     def write_reports(self, errors: int, warnings: int) -> None:
         root = self.config.root
@@ -1061,8 +1120,9 @@ class PhrasesRules(RuleSet):
     options = {"style": ("sourcemod", "mm-utils")}
 
     def lint(
-        self, state: Translations, docs: list[Document], options: dict[str, str]
+        self, state: Optional[State], docs: list[Document], options: dict[str, str]
     ) -> None:
+        assert isinstance(state, Translations)
         for doc in docs:
             state.lint_phrases(doc, options["style"])
 
@@ -1072,6 +1132,7 @@ class RadioPanelRules(RuleSet):
     state = Translations
 
     def lint(
-        self, state: Translations, docs: list[Document], options: dict[str, str]
+        self, state: Optional[State], docs: list[Document], options: dict[str, str]
     ) -> None:
+        assert isinstance(state, Translations)
         state.lint_radiopanel(docs)
